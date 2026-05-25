@@ -410,7 +410,11 @@ func ExtractSubtitles(ctx context.Context, inputPath, outputDir string, streams 
 // Optional codecs (H.265, AV1) are skipped on encoding failure; H.264 failure is fatal.
 // qualities must be built via BuildQualities before calling.
 // videoWidth and videoHeight come from Probe and are used to resolve the "original" quality.
-func TranscodeHLS(ctx context.Context, inputPath, outputDir string, videoWidth, videoHeight, hlsSegmentSeconds int, accel string, codecNames []string, qualities []Quality) ([]Variant, error) {
+// TranscodeHLS transcodes the input to HLS for every Codec × Quality combination.
+// When separateAudio is true, audio is stripped from video segments (-an) because
+// separate audio renditions will be muxed in by the master manifest. When false,
+// the first audio track is muxed into the video segments as a fallback.
+func TranscodeHLS(ctx context.Context, inputPath, outputDir string, videoWidth, videoHeight, hlsSegmentSeconds int, accel string, codecNames []string, qualities []Quality, separateAudio bool) ([]Variant, error) {
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create output dir: %w", err)
 	}
@@ -447,7 +451,7 @@ func TranscodeHLS(ctx context.Context, inputPath, outputDir string, videoWidth, 
 		wg.Add(1)
 		go func(c *Codec) {
 			defer wg.Done()
-			v, err := transcodeCodec(ctx, inputPath, outputDir, c, qualities, videoHeight, hlsSegmentSeconds)
+			v, err := transcodeCodec(ctx, inputPath, outputDir, c, qualities, videoHeight, hlsSegmentSeconds, separateAudio)
 			results <- codecResult{codec: c, variants: v, err: err}
 		}(c)
 	}
@@ -468,7 +472,7 @@ func TranscodeHLS(ctx context.Context, inputPath, outputDir string, videoWidth, 
 	return produced, nil
 }
 
-func transcodeCodec(ctx context.Context, inputPath, outputDir string, c *Codec, qualities []Quality, videoHeight, hlsSegmentSeconds int) ([]Variant, error) {
+func transcodeCodec(ctx context.Context, inputPath, outputDir string, c *Codec, qualities []Quality, videoHeight, hlsSegmentSeconds int, separateAudio bool) ([]Variant, error) {
 	if !encoderAvailable(ctx, c.VideoEnc) {
 		return nil, fmt.Errorf("ffmpeg encoder %q is not available in this container", c.VideoEnc)
 	}
@@ -519,11 +523,13 @@ func transcodeCodec(ctx context.Context, inputPath, outputDir string, c *Codec, 
 		segFilename := filepath.Join(qDir, fmt.Sprintf("%%05d.%s", c.SegmentExt))
 		manifestPath := filepath.Join(qDir, "index.m3u8")
 
-		args = append(args,
-			"-map", fmt.Sprintf("[s%d]", i),
-			"-map", "0:a:0?",
-			"-c:v", c.VideoEnc,
-		)
+		args = append(args, "-map", fmt.Sprintf("[s%d]", i))
+		if separateAudio {
+			args = append(args, "-an")
+		} else {
+			args = append(args, "-map", "0:a:0?")
+		}
+		args = append(args, "-c:v", c.VideoEnc)
 		args = append(args, c.ExtraArgs...)
 
 		if c.CRF > 0 {

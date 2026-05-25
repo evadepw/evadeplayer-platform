@@ -1,0 +1,12 @@
+FROM node:22-alpine AS builder
+WORKDIR /app
+COPY player/package*.json ./
+RUN npm ci
+COPY player/ .
+ARG VITE_VIDEO_PROVIDER_HOST
+ARG VITE_VIDEO_PROVIDER_PROXY_PATH=/hls-proxy
+ARG VITE_VIDEO_POSTER_PATH=/thumbnails
+RUN npx tsc -b && npx vite build --base=/player/
+
+FROM nginx:alpine
+COPY --from=builder /app/dist /usr/share/nginx/html
