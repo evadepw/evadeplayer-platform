@@ -2,7 +2,7 @@ services:
   transcoder:
     build:
       dockerfile: Dockerfile.nvidia
-    gpus: all
+    runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility

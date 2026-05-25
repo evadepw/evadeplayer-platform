@@ -1,1 +1,0 @@
--- Keep the service user and any videos owned by it when rolling back.
