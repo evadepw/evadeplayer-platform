@@ -51,6 +51,25 @@ func (h *VideoHandler) ListVideos(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *VideoHandler) GetStoryboard(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing video id")
+		return
+	}
+
+	cues, err := h.svc.GetStoryboard(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "video not found or not ready")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, cues)
+}
+
 func (h *VideoHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {

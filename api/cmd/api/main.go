@@ -53,7 +53,12 @@ func main() {
 	seriesRepo := repository.NewSeriesRepo(db)
 	producer := queue.NewProducer(rdb, cfg.RedisQueueKey)
 
-	videoSvc := service.NewVideoService(videoRepo, cfg.HLSTokenSecret, cfg.PublicHost)
+	videoSvc := service.NewVideoService(videoRepo, cfg.HLSTokenSecret, cfg.PublicHost, service.SpriteConfig{
+		IntervalSeconds: cfg.SpriteIntervalSeconds,
+		Width:           cfg.SpriteWidth,
+		Height:          cfg.SpriteHeight,
+		Columns:         cfg.SpriteColumns,
+	})
 	seriesSvc := service.NewSeriesService(seriesRepo, cfg.PublicHost)
 	uploadSvc := service.NewUploadService(videoRepo, seriesRepo, seaweed, producer)
 
@@ -121,6 +126,7 @@ func main() {
 	mux.Handle("GET /videos", readAuth(http.HandlerFunc(videoH.ListVideos)))
 
 	mux.Handle("GET /videos/{id}/status", readAuth(http.HandlerFunc(videoH.GetStatus)))
+	mux.Handle("GET /videos/{id}/storyboard", readAuth(http.HandlerFunc(videoH.GetStoryboard)))
 	mux.Handle("GET /videos/{id}", readAuth(http.HandlerFunc(videoH.GetVideo)))
 
 	srv := &http.Server{

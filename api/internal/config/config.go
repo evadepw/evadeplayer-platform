@@ -36,6 +36,11 @@ type Config struct {
 	ServiceKey        string
 	UploadAuth        string // "jwt" | "service_key" | "any" — standalone only
 	MaxUploadSize     int64  // bytes
+
+	SpriteIntervalSeconds int
+	SpriteWidth           int
+	SpriteHeight          int
+	SpriteColumns         int
 }
 
 func Load() (*Config, error) {
@@ -78,6 +83,11 @@ func Load() (*Config, error) {
 		ServiceKey:        getEnv("SERVICE_KEY", ""),
 		UploadAuth:        getEnv("UPLOAD_AUTH", "jwt"),
 		MaxUploadSize:     getEnvInt64("MAX_UPLOAD_SIZE_GB", 50) << 30,
+
+		SpriteIntervalSeconds: int(getEnvInt64("SPRITE_INTERVAL_SECONDS", 10)),
+		SpriteWidth:           int(getEnvInt64("SPRITE_WIDTH", 320)),
+		SpriteHeight:          int(getEnvInt64("SPRITE_HEIGHT", 180)),
+		SpriteColumns:         int(getEnvInt64("SPRITE_COLUMNS", 10)),
 	}
 
 	if len(missing) > 0 {

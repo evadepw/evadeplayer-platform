@@ -21,7 +21,7 @@ info:
     | `any` | Either JWT or service key |
 
     Read endpoints (`GET /videos`, `GET /videos/{id}`, `GET /videos/{id}/status`,
-    `GET /series`, `GET /series/{id}`) always use JWT.
+    `GET /videos/{id}/storyboard`, `GET /series`, `GET /series/{id}`) always use JWT.
     When `AUTH_REQUIRED=false` they are publicly accessible.
 
     ## HLS playback flow
@@ -485,6 +485,48 @@ components:
           type: integer
           description: Total number of series (for pagination).
 
+    StoryboardCoords:
+      type: object
+      required: [x, y]
+      properties:
+        x:
+          type: integer
+          description: Horizontal offset of the frame within the sprite sheet, in pixels.
+          example: 320
+        y:
+          type: integer
+          description: Vertical offset of the frame within the sprite sheet, in pixels.
+          example: 0
+
+    StoryboardCue:
+      type: object
+      required: [url, start_time, end_time, width, height, coords]
+      properties:
+        url:
+          type: string
+          description: URL of the sprite sheet image.
+          example: http://localhost/thumbnails/a1b2c3d4.../sprite.jpg
+        start_time:
+          type: number
+          format: float
+          description: Start of the time interval this frame represents, in seconds.
+          example: 10
+        end_time:
+          type: number
+          format: float
+          description: End of the time interval, in seconds. Clamped to video duration on the last cue.
+          example: 20
+        width:
+          type: integer
+          description: Width of a single frame tile in the sprite sheet, in pixels.
+          example: 320
+        height:
+          type: integer
+          description: Height of a single frame tile in the sprite sheet, in pixels.
+          example: 180
+        coords:
+          $ref: '#/components/schemas/StoryboardCoords'
+
 paths:
   # ── Auth ────────────────────────────────────────────────────────────────────
 
@@ -941,6 +983,72 @@ paths:
                 $ref: '#/components/schemas/Error'
         '404':
           description: Video not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /videos/{id}/storyboard:
+    get:
+      tags: [Videos]
+      summary: Get storyboard cues
+      description: |
+        Returns an array of storyboard cues for JS-based video players (Video.js, Plyr, etc.)
+        that do not support the native HLS Image Stream (`EXT-X-IMAGE-STREAM-INF`).
+
+        Each cue maps a time interval to a frame region within the sprite sheet at
+        `/thumbnails/{videoID}/sprite.jpg`. The sprite is generated during transcoding with
+        one frame per `SPRITE_INTERVAL_SECONDS` seconds (default: 10), tiled in a grid of
+        `SPRITE_COLUMNS` columns (default: 10) at `SPRITE_WIDTH`×`SPRITE_HEIGHT` px
+        (default: 320×180) per frame.
+
+        Returns `404` if the video does not exist or has not yet reached `status=ready`.
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Array of storyboard cues
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StoryboardCue'
+              example:
+                - url: http://localhost/thumbnails/a1b2c3d4.../sprite.jpg
+                  start_time: 0
+                  end_time: 10
+                  width: 320
+                  height: 180
+                  coords: { x: 0, y: 0 }
+                - url: http://localhost/thumbnails/a1b2c3d4.../sprite.jpg
+                  start_time: 10
+                  end_time: 20
+                  width: 320
+                  height: 180
+                  coords: { x: 320, y: 0 }
+        '401':
+          description: Auth required but no valid token provided
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Video not found or not yet ready
           content:
             application/json:
               schema:

@@ -72,7 +72,7 @@ func TestGetVideo_Ready(t *testing.T) {
 			UpdatedAt: time.Now(),
 		},
 	}
-	svc := service.NewVideoService(store, testHLSSecret, "http://localhost/hls")
+	svc := service.NewVideoService(store, testHLSSecret, "http://localhost/hls", service.SpriteConfig{})
 
 	resp, err := svc.GetVideo(context.Background(), id)
 	if err != nil {
@@ -112,7 +112,7 @@ func TestGetVideo_IncludesVersionsForPrimary(t *testing.T) {
 			{ID: "alt-2", Label: "EN dub", Status: model.StatusPending},
 		},
 	}
-	svc := service.NewVideoService(store, testHLSSecret, "http://localhost/hls")
+	svc := service.NewVideoService(store, testHLSSecret, "http://localhost/hls", service.SpriteConfig{})
 
 	resp, err := svc.GetVideo(context.Background(), id)
 	if err != nil {
@@ -144,7 +144,7 @@ func TestGetVideo_NoVersionsForAlternative(t *testing.T) {
 			UpdatedAt: time.Now(),
 		},
 	}
-	svc := service.NewVideoService(store, testHLSSecret, "http://localhost/hls")
+	svc := service.NewVideoService(store, testHLSSecret, "http://localhost/hls", service.SpriteConfig{})
 
 	resp, err := svc.GetVideo(context.Background(), "alt-id")
 	if err != nil {
@@ -159,7 +159,7 @@ func TestGetVideo_Pending(t *testing.T) {
 	store := &fakeVideoStore{
 		video: &model.Video{ID: "v1", Status: model.StatusPending},
 	}
-	svc := service.NewVideoService(store, testHLSSecret, "http://localhost/hls")
+	svc := service.NewVideoService(store, testHLSSecret, "http://localhost/hls", service.SpriteConfig{})
 
 	resp, err := svc.GetVideo(context.Background(), "v1")
 	if err != nil {
