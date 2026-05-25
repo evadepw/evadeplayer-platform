@@ -36,6 +36,7 @@ type Worker struct {
 	codecs            []string
 	qualities         []ffmpeg.Quality
 	thumbnailConfig   ffmpeg.ThumbnailConfig
+	encodingConfig    ffmpeg.EncodingConfig
 }
 
 func New(
@@ -50,6 +51,7 @@ func New(
 	codecs []string,
 	qualities []ffmpeg.Quality,
 	thumbnailConfig ffmpeg.ThumbnailConfig,
+	encodingConfig ffmpeg.EncodingConfig,
 ) *Worker {
 	return &Worker{
 		rdb:               rdb,
@@ -63,6 +65,7 @@ func New(
 		codecs:            codecs,
 		qualities:         qualities,
 		thumbnailConfig:   thumbnailConfig,
+		encodingConfig:    encodingConfig,
 	}
 }
 
@@ -147,14 +150,14 @@ func (w *Worker) process(ctx context.Context, task TranscodeTask) error {
 	w.setProgress(ctx, task.VideoID, 15)
 
 	hlsDir := filepath.Join(workDir, "hls")
-	variants, err := ffmpeg.TranscodeHLS(ctx, localOriginal, hlsDir, probe.Width, probe.Height, w.hlsSegmentSeconds, w.accel, w.codecs, w.qualities, len(probe.Audio) > 0)
+	variants, err := ffmpeg.TranscodeHLS(ctx, localOriginal, hlsDir, probe.Width, probe.Height, w.hlsSegmentSeconds, probe.FrameRate, w.accel, w.codecs, w.qualities, len(probe.Audio) > 0, w.encodingConfig)
 	if err != nil {
 		return fmt.Errorf("transcode HLS: %w", err)
 	}
 	log.Printf("video %s transcoded: variants=%d", task.VideoID, len(variants))
 	w.setProgress(ctx, task.VideoID, 65)
 
-	extractedAudio, _ := ffmpeg.ExtractAudio(ctx, localOriginal, hlsDir, probe.Audio, w.hlsSegmentSeconds)
+	extractedAudio, _ := ffmpeg.ExtractAudio(ctx, localOriginal, hlsDir, probe.Audio, w.hlsSegmentSeconds, w.encodingConfig)
 	log.Printf("video %s audio tracks: extracted=%d/%d", task.VideoID, len(extractedAudio), len(probe.Audio))
 	w.setProgress(ctx, task.VideoID, 72)
 

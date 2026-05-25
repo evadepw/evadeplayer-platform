@@ -37,7 +37,31 @@ type Codec struct {
 	SegmentExt  string // "ts" or "m4s"
 	HLSCodecs   string // CODECS= value for master manifest
 	Optional    bool   // if true, failure skips the codec rather than aborting
-	CRF         int    // >0 enables quality-based mode (bitrate fields ignored)
+}
+
+// EncodingConfig holds tunable encoder parameters exposed via environment variables.
+type EncodingConfig struct {
+	CPUPreset       string // libx264/libx265 preset (ultrafast…veryslow)
+	NvidiaPreset    string // nvenc preset p1–p7
+	AV1CPUUsed      int    // libaom-av1 cpu-used 0–8 (0=best quality, 8=fastest)
+	AV1CRF          int    // libaom-av1 CRF value 0–63
+	H264CRF         int    // libx264 CRF 0–51; 0=bitrate mode. Typical: 20–24
+	H265CRF         int    // libx265 CRF 0–51; 0=bitrate mode. Typical: 24–28
+	AudioSampleRate int    // output audio sample rate in Hz
+	SceneCut        bool   // enable scene-cut keyframe insertion
+}
+
+func DefaultEncodingConfig() EncodingConfig {
+	return EncodingConfig{
+		CPUPreset:       "slow",
+		NvidiaPreset:    "p5",
+		AV1CPUUsed:      4,
+		AV1CRF:          30,
+		H264CRF:         0,
+		H265CRF:         0,
+		AudioSampleRate: 48000,
+		SceneCut:        false,
+	}
 }
 
 type Variant struct {
@@ -53,36 +77,32 @@ var Qualities = []Quality{
 	{Name: "1440p", Height: 1440, Bitrate: "16000k", ABitrate: "192k"},
 }
 
+// Software codecs. Presets and scene-cut are applied dynamically from EncodingConfig.
 var Codecs = []Codec{
 	{
 		Name:     "h264",
 		VideoEnc: "libx264",
 		AudioEnc: "aac",
 		ExtraArgs: []string{
-			"-preset", "fast",
 			"-profile:v", "high",
-			"-level", "4.0",
-			"-sc_threshold", "0",
+			"-level:v", "5.1",
 		},
 		ScaleFilter: "scale=-2:%d",
 		SegmentType: "fmp4",
 		SegmentExt:  "m4s",
-		HLSCodecs:   "avc1.640028,mp4a.40.2",
+		HLSCodecs:   "avc1.640033,mp4a.40.2",
 	},
 	{
 		Name:     "h265",
 		VideoEnc: "libx265",
 		AudioEnc: "aac",
 		ExtraArgs: []string{
-			"-preset", "fast",
 			"-tag:v", "hvc1",
-			"-sc_threshold", "0",
-			"-x265-params", "pools=none",
 		},
 		ScaleFilter: "scale=-2:%d",
 		SegmentType: "fmp4",
 		SegmentExt:  "m4s",
-		HLSCodecs:   "hvc1.1.6.L120.90,mp4a.40.2",
+		HLSCodecs:   "hvc1.1.6.L150.90,mp4a.40.2",
 		Optional:    true,
 	},
 	{
@@ -90,16 +110,14 @@ var Codecs = []Codec{
 		VideoEnc: "libaom-av1",
 		AudioEnc: "aac",
 		ExtraArgs: []string{
-			"-cpu-used", "8",
 			"-row-mt", "1",
 			"-tiles", "2x2",
 		},
 		ScaleFilter: "scale=-2:%d",
 		SegmentType: "fmp4",
 		SegmentExt:  "m4s",
-		HLSCodecs:   "av01.0.04M.08,mp4a.40.2",
+		HLSCodecs:   "av01.0.08M.08,mp4a.40.2",
 		Optional:    true,
-		CRF:         30,
 	},
 }
 
@@ -110,13 +128,12 @@ var nvidiaCodecs = []Codec{
 		VideoEnc:  "h264_nvenc",
 		AudioEnc:  "aac",
 		ExtraArgs: []string{
-			"-preset", "p4",
 			"-profile:v", "high",
 		},
 		ScaleFilter: "scale_cuda=w=-2:h=%d",
 		SegmentType: "fmp4",
 		SegmentExt:  "m4s",
-		HLSCodecs:   "avc1.640028,mp4a.40.2",
+		HLSCodecs:   "avc1.640033,mp4a.40.2",
 	},
 	{
 		Name:      "h265",
@@ -124,28 +141,23 @@ var nvidiaCodecs = []Codec{
 		VideoEnc:  "hevc_nvenc",
 		AudioEnc:  "aac",
 		ExtraArgs: []string{
-			"-preset", "p4",
 			"-tag:v", "hvc1",
 		},
 		ScaleFilter: "scale_cuda=w=-2:h=%d",
 		SegmentType: "fmp4",
 		SegmentExt:  "m4s",
-		HLSCodecs:   "hvc1.1.6.L120.90,mp4a.40.2",
+		HLSCodecs:   "hvc1.1.6.L150.90,mp4a.40.2",
 		Optional:    true,
 	},
 	{
-		Name:      "av1",
-		InputArgs: []string{"-hwaccel", "cuda", "-hwaccel_output_format", "cuda"},
-		VideoEnc:  "av1_nvenc",
-		AudioEnc:  "aac",
-		ExtraArgs: []string{
-			"-preset", "p4",
-			"-sc_threshold", "0",
-		},
+		Name:        "av1",
+		InputArgs:   []string{"-hwaccel", "cuda", "-hwaccel_output_format", "cuda"},
+		VideoEnc:    "av1_nvenc",
+		AudioEnc:    "aac",
 		ScaleFilter: "scale_cuda=w=-2:h=%d",
 		SegmentType: "fmp4",
 		SegmentExt:  "m4s",
-		HLSCodecs:   "av01.0.04M.08,mp4a.40.2",
+		HLSCodecs:   "av01.0.08M.08,mp4a.40.2",
 		Optional:    true,
 	},
 }
@@ -162,7 +174,7 @@ var vaapiCodecs = []Codec{
 		ScaleFilter: "format=nv12,hwupload,scale_vaapi=w=-2:h=%d",
 		SegmentType: "fmp4",
 		SegmentExt:  "m4s",
-		HLSCodecs:   "avc1.640028,mp4a.40.2",
+		HLSCodecs:   "avc1.640033,mp4a.40.2",
 	},
 	{
 		Name:      "h265",
@@ -175,7 +187,7 @@ var vaapiCodecs = []Codec{
 		ScaleFilter: "format=nv12,hwupload,scale_vaapi=w=-2:h=%d",
 		SegmentType: "fmp4",
 		SegmentExt:  "m4s",
-		HLSCodecs:   "hvc1.1.6.L120.90,mp4a.40.2",
+		HLSCodecs:   "hvc1.1.6.L150.90,mp4a.40.2",
 		Optional:    true,
 	},
 	{
@@ -186,7 +198,7 @@ var vaapiCodecs = []Codec{
 		ScaleFilter: "format=nv12,hwupload,scale_vaapi=w=-2:h=%d",
 		SegmentType: "fmp4",
 		SegmentExt:  "m4s",
-		HLSCodecs:   "av01.0.04M.08,mp4a.40.2",
+		HLSCodecs:   "av01.0.08M.08,mp4a.40.2",
 		Optional:    true,
 	},
 }
@@ -219,6 +231,7 @@ type ProbeResult struct {
 	Duration  float64
 	Width     int
 	Height    int
+	FrameRate float64 // frames per second parsed from r_frame_rate; 0 if unavailable
 	Audio     []AudioStream
 	Subtitles []SubtitleStream
 }
@@ -238,11 +251,12 @@ func Probe(ctx context.Context, inputPath string) (*ProbeResult, error) {
 
 	var data struct {
 		Streams []struct {
-			CodecType string            `json:"codec_type"`
-			CodecName string            `json:"codec_name"`
-			Width     int               `json:"width"`
-			Height    int               `json:"height"`
-			Tags      map[string]string `json:"tags"`
+			CodecType  string            `json:"codec_type"`
+			CodecName  string            `json:"codec_name"`
+			Width      int               `json:"width"`
+			Height     int               `json:"height"`
+			RFrameRate string            `json:"r_frame_rate"`
+			Tags       map[string]string `json:"tags"`
 		} `json:"streams"`
 		Format struct {
 			Duration string `json:"duration"`
@@ -260,6 +274,7 @@ func Probe(ctx context.Context, inputPath string) (*ProbeResult, error) {
 			if s.Width > 0 && result.Width == 0 {
 				result.Width = s.Width
 				result.Height = s.Height
+				result.FrameRate = parseFrameRate(s.RFrameRate)
 			}
 		case "audio":
 			result.Audio = append(result.Audio, AudioStream{
@@ -283,6 +298,20 @@ func Probe(ctx context.Context, inputPath string) (*ProbeResult, error) {
 	return result, nil
 }
 
+// parseFrameRate parses an ffprobe r_frame_rate fraction (e.g. "30/1", "24000/1001").
+func parseFrameRate(s string) float64 {
+	parts := strings.SplitN(s, "/", 2)
+	if len(parts) != 2 {
+		return 0
+	}
+	num, err1 := strconv.ParseFloat(parts[0], 64)
+	den, err2 := strconv.ParseFloat(parts[1], 64)
+	if err1 != nil || err2 != nil || den == 0 {
+		return 0
+	}
+	return num / den
+}
+
 // textSubtitleCodecs lists codecs that ffmpeg can convert to WebVTT.
 // Bitmap-based codecs (hdmv_pgs_subtitle, dvd_subtitle, dvb_subtitle) are excluded.
 var textSubtitleCodecs = map[string]bool{
@@ -297,7 +326,7 @@ var textSubtitleCodecs = map[string]bool{
 
 // ExtractAudio creates audio-only HLS playlists for each stream under outputDir/audio/<typeIndex>/.
 // Individual stream failures are logged and skipped; the returned slice contains only successful streams.
-func ExtractAudio(ctx context.Context, inputPath, outputDir string, streams []AudioStream, segSecs int) ([]AudioStream, error) {
+func ExtractAudio(ctx context.Context, inputPath, outputDir string, streams []AudioStream, segSecs int, cfg EncodingConfig) ([]AudioStream, error) {
 	if len(streams) == 0 {
 		return nil, nil
 	}
@@ -323,7 +352,7 @@ func ExtractAudio(ctx context.Context, inputPath, outputDir string, streams []Au
 				"-c:a", "aac",
 				"-b:a", "128k",
 				"-ac", "2",
-				"-ar", "48000",
+				"-ar", strconv.Itoa(cfg.AudioSampleRate),
 				"-vn",
 				"-f", "hls",
 				"-hls_time", strconv.Itoa(segSecs),
@@ -392,8 +421,10 @@ func ExtractSubtitles(ctx context.Context, inputPath, outputDir string, streams 
 		if targetDur < 1 {
 			targetDur = 1
 		}
-		playlist := fmt.Sprintf("#EXTM3U\n#EXT-X-TARGETDURATION:%d\n#EXT-X-VERSION:3\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:%d,\nsub.vtt\n#EXT-X-ENDLIST\n",
-			targetDur, targetDur)
+		playlist := fmt.Sprintf(
+			"#EXTM3U\n#EXT-X-TARGETDURATION:%d\n#EXT-X-VERSION:3\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:%.3f,\nsub.vtt\n#EXT-X-ENDLIST\n",
+			targetDur, duration,
+		)
 		if err := os.WriteFile(filepath.Join(dir, "index.m3u8"), []byte(playlist), 0o644); err != nil {
 			log.Printf("skip subtitle stream %d: write playlist: %v", s.TypeIndex, err)
 			continue
@@ -405,16 +436,19 @@ func ExtractSubtitles(ctx context.Context, inputPath, outputDir string, streams 
 
 // TranscodeHLS transcodes the input to HLS for every Codec × Quality combination.
 // Optional codecs (H.265, AV1) are skipped on encoding failure; H.264 failure is fatal.
-// videoWidth and videoHeight come from Probe and are used to resolve the "original" quality.
-// TranscodeHLS transcodes the input to HLS for every Codec × Quality combination.
-// Optional codecs (H.265, AV1) are skipped on encoding failure; H.264 failure is fatal.
-// qualities must be built via BuildQualities before calling.
-// videoWidth and videoHeight come from Probe and are used to resolve the "original" quality.
-// TranscodeHLS transcodes the input to HLS for every Codec × Quality combination.
-// When separateAudio is true, audio is stripped from video segments (-an) because
-// separate audio renditions will be muxed in by the master manifest. When false,
-// the first audio track is muxed into the video segments as a fallback.
-func TranscodeHLS(ctx context.Context, inputPath, outputDir string, videoWidth, videoHeight, hlsSegmentSeconds int, accel string, codecNames []string, qualities []Quality, separateAudio bool) ([]Variant, error) {
+// When separateAudio is true, audio is stripped from video segments because separate
+// audio renditions will be muxed in by the master manifest.
+func TranscodeHLS(
+	ctx context.Context,
+	inputPath, outputDir string,
+	videoWidth, videoHeight, hlsSegmentSeconds int,
+	frameRate float64,
+	accel string,
+	codecNames []string,
+	qualities []Quality,
+	separateAudio bool,
+	cfg EncodingConfig,
+) ([]Variant, error) {
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create output dir: %w", err)
 	}
@@ -451,7 +485,7 @@ func TranscodeHLS(ctx context.Context, inputPath, outputDir string, videoWidth, 
 		wg.Add(1)
 		go func(c *Codec) {
 			defer wg.Done()
-			v, err := transcodeCodec(ctx, inputPath, outputDir, c, qualities, videoHeight, hlsSegmentSeconds, separateAudio)
+			v, err := transcodeCodec(ctx, inputPath, outputDir, c, qualities, videoHeight, hlsSegmentSeconds, frameRate, separateAudio, cfg)
 			results <- codecResult{codec: c, variants: v, err: err}
 		}(c)
 	}
@@ -472,7 +506,16 @@ func TranscodeHLS(ctx context.Context, inputPath, outputDir string, videoWidth, 
 	return produced, nil
 }
 
-func transcodeCodec(ctx context.Context, inputPath, outputDir string, c *Codec, qualities []Quality, videoHeight, hlsSegmentSeconds int, separateAudio bool) ([]Variant, error) {
+func transcodeCodec(
+	ctx context.Context,
+	inputPath, outputDir string,
+	c *Codec,
+	qualities []Quality,
+	videoHeight, hlsSegmentSeconds int,
+	frameRate float64,
+	separateAudio bool,
+	cfg EncodingConfig,
+) ([]Variant, error) {
 	if !encoderAvailable(ctx, c.VideoEnc) {
 		return nil, fmt.Errorf("ffmpeg encoder %q is not available in this container", c.VideoEnc)
 	}
@@ -494,6 +537,13 @@ func transcodeCodec(ctx context.Context, inputPath, outputDir string, c *Codec, 
 		}
 	}
 
+	// GOP aligned to segment duration: keyframe every segment so players can seek cleanly.
+	fps := frameRate
+	if fps <= 0 {
+		fps = 25
+	}
+	gopSize := int(math.Round(fps)) * hlsSegmentSeconds
+
 	scaleFilter := c.ScaleFilter
 	if scaleFilter == "" {
 		scaleFilter = "scale=-2:%d"
@@ -508,7 +558,6 @@ func transcodeCodec(ctx context.Context, inputPath, outputDir string, c *Codec, 
 	}
 	for i, q := range applicable {
 		if q.Original {
-			// No scaling: pass video through unchanged.
 			fmt.Fprintf(&fc, ";[v%d]null[s%d]", i, i)
 		} else {
 			fmt.Fprintf(&fc, ";[v%d]%s[s%d]", i, fmt.Sprintf(scaleFilter, q.Height), i)
@@ -524,32 +573,58 @@ func transcodeCodec(ctx context.Context, inputPath, outputDir string, c *Codec, 
 		manifestPath := filepath.Join(qDir, "index.m3u8")
 
 		args = append(args, "-map", fmt.Sprintf("[s%d]", i))
-		if separateAudio {
-			args = append(args, "-an")
-		} else {
+		if !separateAudio {
 			args = append(args, "-map", "0:a:0?")
 		}
+
 		args = append(args, "-c:v", c.VideoEnc)
 		args = append(args, c.ExtraArgs...)
+		args = append(args, dynamicEncoderArgs(c, cfg)...)
 
-		if c.CRF > 0 {
-			args = append(args, "-crf", strconv.Itoa(c.CRF), "-b:v", "0")
-		} else if q.Bitrate != "" {
-			args = append(args,
-				"-b:v", q.Bitrate,
-				"-maxrate", q.Bitrate,
-				"-bufsize", doubleRate(q.Bitrate),
-			)
+		switch c.VideoEnc {
+		case "libx264":
+			if cfg.H264CRF > 0 {
+				// Capped CRF: constant quality with peak bitrate cap for ABR predictability.
+				args = append(args, "-crf", strconv.Itoa(cfg.H264CRF))
+				if q.Bitrate != "" {
+					args = append(args, "-maxrate", q.Bitrate, "-bufsize", doubleRate(q.Bitrate))
+				}
+			} else if q.Bitrate != "" {
+				args = append(args, "-b:v", q.Bitrate, "-maxrate", q.Bitrate, "-bufsize", doubleRate(q.Bitrate))
+			}
+		case "libx265":
+			if cfg.H265CRF > 0 {
+				args = append(args, "-crf", strconv.Itoa(cfg.H265CRF))
+				if q.Bitrate != "" {
+					args = append(args, "-maxrate", q.Bitrate, "-bufsize", doubleRate(q.Bitrate))
+				}
+			} else if q.Bitrate != "" {
+				args = append(args, "-b:v", q.Bitrate, "-maxrate", q.Bitrate, "-bufsize", doubleRate(q.Bitrate))
+			}
+		case "libaom-av1":
+			args = append(args, "-crf", strconv.Itoa(cfg.AV1CRF), "-b:v", "0")
+		default:
+			// Hardware encoders (nvenc, vaapi): bitrate mode only.
+			if q.Bitrate != "" {
+				args = append(args, "-b:v", q.Bitrate, "-maxrate", q.Bitrate, "-bufsize", doubleRate(q.Bitrate))
+			}
 		}
-		// empty Bitrate (original quality): rely on encoder defaults
 
 		args = append(args,
-			"-g", "48",
-			"-keyint_min", "48",
-			"-c:a", c.AudioEnc,
-			"-b:a", q.ABitrate,
-			"-ac", "2",
-			"-ar", "44100",
+			"-g", strconv.Itoa(gopSize),
+			"-keyint_min", strconv.Itoa(gopSize),
+		)
+
+		if !separateAudio {
+			args = append(args,
+				"-c:a", c.AudioEnc,
+				"-b:a", q.ABitrate,
+				"-ac", "2",
+				"-ar", strconv.Itoa(cfg.AudioSampleRate),
+			)
+		}
+
+		args = append(args,
 			"-f", "hls",
 			"-hls_time", strconv.Itoa(hlsSegmentSeconds),
 			"-hls_playlist_type", "vod",
@@ -576,6 +651,37 @@ func transcodeCodec(ctx context.Context, inputPath, outputDir string, c *Codec, 
 		variants = append(variants, Variant{Codec: c, Quality: &applicable[i]})
 	}
 	return variants, nil
+}
+
+// dynamicEncoderArgs returns encoder-specific args derived from EncodingConfig:
+// preset for CPU/NVIDIA encoders, scene-cut control, and AV1 cpu-used.
+func dynamicEncoderArgs(c *Codec, cfg EncodingConfig) []string {
+	var args []string
+	switch c.VideoEnc {
+	case "libx264":
+		if cfg.CPUPreset != "" {
+			args = append(args, "-preset", cfg.CPUPreset)
+		}
+		if !cfg.SceneCut {
+			args = append(args, "-sc_threshold", "0")
+		}
+	case "libx265":
+		if cfg.CPUPreset != "" {
+			args = append(args, "-preset", cfg.CPUPreset)
+		}
+		x265p := "pools=none"
+		if !cfg.SceneCut {
+			x265p += ":scenecut=0"
+		}
+		args = append(args, "-x265-params", x265p)
+	case "libaom-av1":
+		args = append(args, "-cpu-used", strconv.Itoa(cfg.AV1CPUUsed))
+	case "h264_nvenc", "hevc_nvenc", "av1_nvenc":
+		if cfg.NvidiaPreset != "" {
+			args = append(args, "-preset", cfg.NvidiaPreset)
+		}
+	}
+	return args
 }
 
 func filterCodecs(available []Codec, names []string) ([]Codec, error) {
@@ -696,13 +802,12 @@ func WriteMasterManifestWithConfig(outputDir string, variants []Variant, audio [
 	for _, v := range variants {
 		videoBw := bitrateKbpsToInt(v.Quality.Bitrate)
 		if videoBw == 0 {
-			// "original" quality has no explicit bitrate; estimate from height.
 			videoBw = bitrateEstimateForHeight(v.Quality.Height)
 		}
 		audioBw := bitrateKbpsToInt(v.Quality.ABitrate)
 		var bw int
-		if v.Codec.CRF > 0 {
-			// AV1 ~40% of equivalent H.264 bitrate; use that as the BANDWIDTH hint.
+		if v.Codec.VideoEnc == "libaom-av1" {
+			// AV1 CRF mode: estimate ~40% of equivalent H.264 bitrate.
 			bw = videoBw*400 + audioBw*1000
 		} else {
 			bw = (videoBw + audioBw) * 1000

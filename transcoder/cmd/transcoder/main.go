@@ -48,7 +48,7 @@ func main() {
 
 	seaweed := storage.NewSeaweedFS(cfg.SeaweedFSFiler)
 
-	w := worker.New(rdb, cfg.RedisQueueKey, db, seaweed, cfg.TempDir, cfg.Workers, cfg.HLSSegmentSeconds, cfg.Accel, cfg.Codecs, cfg.Qualities, cfg.Thumbnail)
+	w := worker.New(rdb, cfg.RedisQueueKey, db, seaweed, cfg.TempDir, cfg.Workers, cfg.HLSSegmentSeconds, cfg.Accel, cfg.Codecs, cfg.Qualities, cfg.Thumbnail, cfg.Encoding)
 
 	runCtx, runCancel := context.WithCancel(context.Background())
 	defer runCancel()

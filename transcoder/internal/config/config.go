@@ -30,6 +30,7 @@ type Config struct {
 	Codecs            []string
 	Qualities         []ffmpeg.Quality
 	Thumbnail         ffmpeg.ThumbnailConfig
+	Encoding          ffmpeg.EncodingConfig
 }
 
 func Load() (*Config, error) {
@@ -66,6 +67,16 @@ func Load() (*Config, error) {
 			PreviewWidth:          getEnvPositiveInt("TRANSCODE_PREVIEW_WIDTH", 640),
 			PreviewHeight:         getEnvPositiveInt("TRANSCODE_PREVIEW_HEIGHT", 360),
 			ImageStreamBandwidth:  getEnvPositiveInt("TRANSCODE_IMAGE_STREAM_BANDWIDTH", 30000),
+		},
+		Encoding: ffmpeg.EncodingConfig{
+			CPUPreset:       getEnv("TRANSCODE_PRESET", "slow"),
+			NvidiaPreset:    getEnv("TRANSCODE_NVIDIA_PRESET", "p5"),
+			AV1CPUUsed:      getEnvPositiveInt("TRANSCODE_AV1_CPU_USED", 4),
+			AV1CRF:          getEnvPositiveInt("TRANSCODE_AV1_CRF", 30),
+			H264CRF:         getEnvInt("TRANSCODE_H264_CRF", 0),
+			H265CRF:         getEnvInt("TRANSCODE_H265_CRF", 0),
+			AudioSampleRate: getEnvPositiveInt("TRANSCODE_AUDIO_SAMPLE_RATE", 48000),
+			SceneCut:        getEnvBool("TRANSCODE_SCENE_CUT", false),
 		},
 	}
 
@@ -128,6 +139,18 @@ func getEnvPositiveInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return fallback
+	}
+	return b
 }
 
 func getEnvList(key, fallback string) []string {

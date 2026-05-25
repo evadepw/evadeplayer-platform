@@ -411,7 +411,93 @@ accel="$(choose "Acceleration backend" "$cur_accel" \
 
 compose_file="$(compose_files_for "$mode" "$accel")"
 
-# ══ 7. Player ═════════════════════════════════════════════════════════════════
+# ══ 7. Encoding quality ═══════════════════════════════════════════════════════
+section "Encoding quality"
+
+# Load existing / defaults so re-runs preserve values without prompting.
+preset="$(default_for        TRANSCODE_PRESET            slow)"
+nvidia_preset="$(default_for TRANSCODE_NVIDIA_PRESET     p5)"
+h264_crf="$(default_for      TRANSCODE_H264_CRF          0)"
+h265_crf="$(default_for      TRANSCODE_H265_CRF          0)"
+av1_crf="$(default_for       TRANSCODE_AV1_CRF           30)"
+av1_cpu="$(default_for       TRANSCODE_AV1_CPU_USED      4)"
+audio_rate="$(default_for    TRANSCODE_AUDIO_SAMPLE_RATE 48000)"
+scene_cut="$(default_for     TRANSCODE_SCENE_CUT         false)"
+
+case "$accel" in
+  cpu)    info "Software encoding (libx264 / libx265 / libaom-av1)" ;;
+  nvidia) info "Hardware encoding (NVENC)" ;;
+  vaapi)  info "Hardware encoding (VAAPI) — encoder preset not applicable" ;;
+esac
+
+vbr_status="off"
+[[ "$h264_crf" != "0" || "$h265_crf" != "0" ]] && vbr_status="on"
+
+# libaom-av1 CRF is only relevant for software encoding.
+_use_libaom=false
+[[ "$accel" == "cpu" && "$codecs" == *"av1"* ]] && _use_libaom=true
+
+if [[ "$_use_libaom" == "true" ]]; then
+  _p "\n  ${D}preset=%-8s  VBR=%s  AV1 crf=%-3s cpu-used=%-2s  audio=%s Hz${N}\n\n" \
+    "$preset" "$vbr_status" "$av1_crf" "$av1_cpu" "$audio_rate"
+elif [[ "$accel" == "nvidia" ]]; then
+  _p "\n  ${D}nvidia-preset=%-4s  VBR=%s  audio=%s Hz${N}\n\n" \
+    "$nvidia_preset" "$vbr_status" "$audio_rate"
+else
+  _p "\n  ${D}preset=%-8s  VBR=%s  audio=%s Hz${N}\n\n" \
+    "$preset" "$vbr_status" "$audio_rate"
+fi
+
+if ask_yn "Configure encoding quality settings" "n"; then
+  echo
+
+  if [[ "$accel" == "cpu" ]]; then
+    preset="$(choose "CPU encoder preset  (libx264 / libx265)" "$preset" \
+      "fast:Fast — lower quality, quicker encode" \
+      "medium:Medium — balanced" \
+      "slow:Slow — better compression, ~2× longer (recommended for VoD)" \
+      "slower:Slower — best quality, significantly longer")"
+  fi
+
+  if [[ "$accel" == "nvidia" ]]; then
+    nvidia_preset="$(choose "NVIDIA NVENC preset" "$nvidia_preset" \
+      "p4:p4 — balanced speed / quality" \
+      "p5:p5 — good quality  (recommended)" \
+      "p6:p6 — high quality, slower" \
+      "p7:p7 — best quality, slowest")"
+  fi
+
+  echo
+  info "CRF (variable bitrate): instead of a fixed bitrate, the encoder targets a constant"
+  info "quality level — dark/simple scenes use less data, action scenes use more."
+  info "The quality bitrate you configured above becomes the maximum allowed peak."
+  info "Leave at 0 to keep fixed bitrate (CBR)."
+  echo
+  info "Lower number = better quality and larger file. 0 = off (use fixed bitrate instead)."
+  h264_crf="$(ask TRANSCODE_H264_CRF "H.264 CRF  (0=off  |  20=excellent  22=good  24=balanced)" "$h264_crf")"
+  h265_crf="$(ask TRANSCODE_H265_CRF "H.265 CRF  (0=off  |  24=excellent  26=good  28=balanced)" "$h265_crf")"
+
+  if [[ "$_use_libaom" == "true" ]]; then
+    echo
+    info "AV1 (software encoder) works differently from H.264/H.265: it ignores a fixed"
+    info "bitrate target and always uses CRF. The quality bitrates you set above act as a"
+    info "peak cap — the encoder goes lower on simple scenes, higher on complex ones."
+    info "Lower number = better quality and larger file."
+    av1_crf="$(ask TRANSCODE_AV1_CRF      "AV1 CRF       (28=excellent  30=good  32=balanced  36=small)" "$av1_crf")"
+    info "Lower number = better compression, slower encode."
+    av1_cpu="$(ask TRANSCODE_AV1_CPU_USED "AV1 cpu-used  (4=good quality  6=faster  8=fastest)" "$av1_cpu")"
+  fi
+
+  echo
+  audio_rate="$(choose "Audio sample rate" "$audio_rate" \
+    "48000:48000 Hz — standard for video (recommended)" \
+    "44100:44100 Hz — CD standard")"
+  echo
+  info "Improves seek accuracy at scene transitions. Rarely noticeable, slightly larger files."
+  scene_cut="$(ask_bool TRANSCODE_SCENE_CUT "Extra keyframes at scene cuts" "$scene_cut")"
+fi
+
+# ══ 8. Player ═════════════════════════════════════════════════════════════════
 player_enabled="false"
 if [[ "$mode" != "transcoder" ]]; then
   section "Player"
@@ -470,6 +556,24 @@ TRANSCODE_SPRITE_HEIGHT=$sprite_h
 TRANSCODE_SPRITE_COLUMNS=$sprite_cols
 TRANSCODE_SPRITE_INTERVAL_SECONDS=$sprite_interval
 TRANSCODE_IMAGE_STREAM_BANDWIDTH=$image_stream_bw
+
+# Encoding quality
+# CPU preset (libx264/libx265): ultrafast superfast veryfast faster fast medium slow slower veryslow
+TRANSCODE_PRESET=$preset
+# NVIDIA NVENC preset: p1 (fastest) … p7 (best quality)
+TRANSCODE_NVIDIA_PRESET=$nvidia_preset
+# Variable bitrate — CRF mode: quality is constant, bitrate adapts to scene complexity.
+# 0 = disabled (fixed bitrate). H.264 typical: 20-24. H.265 typical: 24-28.
+# When enabled, the quality's Bitrate becomes a peak cap (-maxrate), not a fixed target.
+TRANSCODE_H264_CRF=$h264_crf
+TRANSCODE_H265_CRF=$h265_crf
+# AV1 (libaom-av1, cpu accel only): CRF range 0-63. cpu-used 0=best quality, 8=fastest.
+TRANSCODE_AV1_CRF=$av1_crf
+TRANSCODE_AV1_CPU_USED=$av1_cpu
+# Audio sample rate in Hz. 48000 = standard for video. 44100 = CD standard.
+TRANSCODE_AUDIO_SAMPLE_RATE=$audio_rate
+# Insert extra keyframes at scene cuts for better seek accuracy (slightly increases file size).
+TRANSCODE_SCENE_CUT=$scene_cut
 
 COMPOSE_PROFILES=
 EOF
@@ -538,6 +642,24 @@ TRANSCODE_SPRITE_HEIGHT=$sprite_h
 TRANSCODE_SPRITE_COLUMNS=$sprite_cols
 TRANSCODE_SPRITE_INTERVAL_SECONDS=$sprite_interval
 TRANSCODE_IMAGE_STREAM_BANDWIDTH=$image_stream_bw
+
+# Encoding quality
+# CPU preset (libx264/libx265): ultrafast superfast veryfast faster fast medium slow slower veryslow
+TRANSCODE_PRESET=$preset
+# NVIDIA NVENC preset: p1 (fastest) … p7 (best quality)
+TRANSCODE_NVIDIA_PRESET=$nvidia_preset
+# Variable bitrate — CRF mode: quality is constant, bitrate adapts to scene complexity.
+# 0 = disabled (fixed bitrate). H.264 typical: 20-24. H.265 typical: 24-28.
+# When enabled, the quality's Bitrate becomes a peak cap (-maxrate), not a fixed target.
+TRANSCODE_H264_CRF=$h264_crf
+TRANSCODE_H265_CRF=$h265_crf
+# AV1 (libaom-av1, cpu accel only): CRF range 0-63. cpu-used 0=best quality, 8=fastest.
+TRANSCODE_AV1_CRF=$av1_crf
+TRANSCODE_AV1_CPU_USED=$av1_cpu
+# Audio sample rate in Hz. 48000 = standard for video. 44100 = CD standard.
+TRANSCODE_AUDIO_SAMPLE_RATE=$audio_rate
+# Insert extra keyframes at scene cuts for better seek accuracy (slightly increases file size).
+TRANSCODE_SCENE_CUT=$scene_cut
 
 # Player
 PLAYER_ENABLED=$player_enabled
