@@ -7,7 +7,7 @@ COPY . .
 RUN go mod tidy
 RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-s -w" -o /transcoder ./cmd/transcoder
 
-FROM ubuntu:24.04
+FROM --platform=linux/amd64 ubuntu:24.04
 RUN sed -i 's/^Components: .*/Components: main restricted universe multiverse/' /etc/apt/sources.list.d/ubuntu.sources \
     && apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates tzdata ffmpeg \

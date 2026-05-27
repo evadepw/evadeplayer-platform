@@ -123,18 +123,21 @@ HLS_TOKEN_SECRET=change-me
 
 Main endpoints:
 
-| Method | Path                  | Description      |
-| ------ | --------------------- | ---------------- |
-| `POST` | `/auth/login`         | Login            |
-| `POST` | `/videos/upload`      | Upload video     |
-| `GET`  | `/videos`             | List videos      |
-| `GET`  | `/videos/{id}`        | Video details    |
-| `GET`  | `/videos/{id}/status` | Transcode status |
-| `POST` | `/series`             | Create series    |
-| `GET`  | `/series/{id}`        | Series details   |
-| `GET`  | `/healthz`            | Health check     |
+| Method | Path                        | Description        |
+| ------ | --------------------------- | ------------------ |
+| `POST` | `/auth/register`            | Register           |
+| `POST` | `/auth/login`               | Login              |
+| `POST` | `/videos/upload`            | Upload video       |
+| `GET`  | `/videos`                   | List videos        |
+| `GET`  | `/videos/{id}`              | Video details      |
+| `GET`  | `/videos/{id}/status`       | Transcode status   |
+| `GET`  | `/videos/{id}/storyboard`   | Preview storyboard |
+| `POST` | `/series`                   | Create series      |
+| `GET`  | `/series`                   | List series        |
+| `GET`  | `/series/{id}`              | Series details     |
+| `GET`  | `/healthz`                  | Health check       |
 
-Full spec: [`openapi.yaml`](openapi.yaml)
+Full spec: [`api/openapi.yaml`](api/openapi.yaml) · Swagger UI: `http://localhost/swagger/`
 
 ---
 

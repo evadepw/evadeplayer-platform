@@ -11,5 +11,6 @@ FROM alpine:3.19
 RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
 COPY --from=builder /api /app/api
+COPY openapi.yaml /app/openapi.yaml
 EXPOSE 8000
 ENTRYPOINT ["/app/api"]

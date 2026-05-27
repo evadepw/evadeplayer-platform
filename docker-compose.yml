@@ -131,6 +131,13 @@ services:
         VITE_VIDEO_PROVIDER_HOST: ${PUBLIC_HOST}
     restart: unless-stopped
 
+  swagger-ui:
+    image: swaggerapi/swagger-ui
+    restart: unless-stopped
+    environment:
+      URL: /api/openapi.yaml
+      BASE_URL: /swagger
+
   nginx:
     build:
       context: .
@@ -142,6 +149,7 @@ services:
     depends_on:
       - api
       - seaweedfs-filer
+      - swagger-ui
 
 volumes:
   postgres_data:
