@@ -113,7 +113,7 @@ func (r *SeriesRepo) FindByIDWithEpisodes(ctx context.Context, id string) (*mode
 // attaches them to the matching episodes in seasons and flat episode slices.
 func (r *SeriesRepo) attachVersions(ctx context.Context, ids []string, seasons *[]model.Season, episodes *[]model.Episode) error {
 	q := `SELECT version_of, id, COALESCE(version_label, ''), COALESCE(version_description, ''), status
-	      FROM videos WHERE version_of = ANY($1::text[]) ORDER BY created_at`
+	      FROM videos WHERE version_of = ANY($1::uuid[]) ORDER BY created_at`
 	rows, err := r.db.Query(ctx, q, ids)
 	if err != nil {
 		return fmt.Errorf("query versions: %w", err)
