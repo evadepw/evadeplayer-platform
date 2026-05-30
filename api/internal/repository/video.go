@@ -20,10 +20,14 @@ func NewVideoRepo(db *pgxpool.Pool) *VideoRepo {
 }
 
 func (r *VideoRepo) CreateWithID(ctx context.Context, v *model.Video) error {
-	q := `INSERT INTO videos (id, original_path, size_bytes)
-	      VALUES ($1, $2, $3)
+	q := `INSERT INTO videos (id, original_path, size_bytes, segments)
+	      VALUES ($1, $2, $3, $4)
 	      RETURNING status, created_at, updated_at`
-	err := r.db.QueryRow(ctx, q, v.ID, v.OriginalPath, v.SizeBytes).
+	var seg interface{}
+	if len(v.Segments) > 0 {
+		seg = v.Segments
+	}
+	err := r.db.QueryRow(ctx, q, v.ID, v.OriginalPath, v.SizeBytes, seg).
 		Scan(&v.Status, &v.CreatedAt, &v.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("create video: %w", err)
@@ -35,12 +39,12 @@ func (r *VideoRepo) FindByID(ctx context.Context, id string) (*model.Video, erro
 	v := &model.Video{}
 	q := `SELECT id, status, progress, original_path,
 	             duration, width, height, size_bytes, error_message,
-	             created_at, updated_at
+	             segments, created_at, updated_at
 	      FROM videos WHERE id = $1`
 	err := r.db.QueryRow(ctx, q, id).Scan(
 		&v.ID, &v.Status, &v.Progress, &v.OriginalPath,
 		&v.Duration, &v.Width, &v.Height, &v.SizeBytes, &v.ErrorMessage,
-		&v.CreatedAt, &v.UpdatedAt,
+		&v.Segments, &v.CreatedAt, &v.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -49,6 +53,15 @@ func (r *VideoRepo) FindByID(ctx context.Context, id string) (*model.Video, erro
 		return nil, fmt.Errorf("find video by id: %w", err)
 	}
 	return v, nil
+}
+
+func (r *VideoRepo) SetSegments(ctx context.Context, id string, segments []byte) error {
+	q := `UPDATE videos SET segments = $1 WHERE id = $2`
+	_, err := r.db.Exec(ctx, q, segments, id)
+	if err != nil {
+		return fmt.Errorf("set segments: %w", err)
+	}
+	return nil
 }
 
 func (r *VideoRepo) List(ctx context.Context, limit, offset int) ([]*model.Video, int, error) {

@@ -99,6 +99,7 @@ func main() {
 	mux.Handle("GET /videos/{id}", readMW(http.HandlerFunc(videoH.GetVideo)))
 	mux.Handle("GET /videos/{id}/status", readMW(http.HandlerFunc(videoH.GetStatus)))
 	mux.Handle("GET /videos/{id}/storyboard", readMW(http.HandlerFunc(videoH.GetStoryboard)))
+	mux.Handle("GET /videos/{id}/segments", readMW(http.HandlerFunc(videoH.GetSegments)))
 
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%s", cfg.APIPort),

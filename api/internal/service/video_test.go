@@ -161,3 +161,10 @@ func (f *fakeVideoStore) UpdateStatus(_ context.Context, id string, status model
 	}
 	return nil
 }
+
+func (f *fakeVideoStore) SetSegments(_ context.Context, id string, segments []byte) error {
+	if f.video != nil && f.video.ID == id {
+		f.video.Segments = segments
+	}
+	return nil
+}

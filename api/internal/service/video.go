@@ -81,6 +81,14 @@ func (s *VideoService) GetStatus(ctx context.Context, id string) (*model.Video, 
 	return s.videoRepo.FindByID(ctx, id)
 }
 
+func (s *VideoService) GetSegments(ctx context.Context, id string) ([]byte, error) {
+	v, err := s.videoRepo.FindByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return v.Segments, nil
+}
+
 func (s *VideoService) previewURL(videoID string) string {
 	return fmt.Sprintf("%s/thumbnails/%s/preview.jpg", s.publicBaseURL, videoID)
 }

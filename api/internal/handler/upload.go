@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"path/filepath"
@@ -59,11 +61,29 @@ func (h *UploadHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var segments []byte
+	if sf, _, serr := r.FormFile("segments"); serr == nil {
+		defer sf.Close()
+		if data, serr := io.ReadAll(sf); serr == nil && json.Valid(data) {
+			segments = data
+		} else if serr == nil {
+			writeError(w, http.StatusBadRequest, "segments: invalid JSON")
+			return
+		}
+	} else if s := r.FormValue("segments"); s != "" {
+		if !json.Valid([]byte(s)) {
+			writeError(w, http.StatusBadRequest, "segments: invalid JSON")
+			return
+		}
+		segments = []byte(s)
+	}
+
 	log.Printf("[upload] starting storage upload, file size=%d ext=%s", header.Size, ext)
 	video, err := h.svc.Upload(r.Context(), &service.UploadInput{
-		FileExt: ext,
-		Size:    header.Size,
-		Reader:  file,
+		FileExt:  ext,
+		Size:     header.Size,
+		Reader:   file,
+		Segments: segments,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "upload failed")

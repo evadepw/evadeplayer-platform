@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type VideoStatus string
 
@@ -12,17 +15,18 @@ const (
 )
 
 type Video struct {
-	ID           string      `json:"id"`
-	Status       VideoStatus `json:"status"`
-	Progress     int         `json:"progress"`
-	OriginalPath string      `json:"-"`
-	Duration     *float64    `json:"duration,omitempty"`
-	Width        *int        `json:"width,omitempty"`
-	Height       *int        `json:"height,omitempty"`
-	SizeBytes    int64       `json:"size_bytes"`
-	ErrorMessage *string     `json:"error_message,omitempty"`
-	CreatedAt    time.Time   `json:"created_at"`
-	UpdatedAt    time.Time   `json:"updated_at"`
+	ID           string          `json:"id"`
+	Status       VideoStatus     `json:"status"`
+	Progress     int             `json:"progress"`
+	OriginalPath string          `json:"-"`
+	Duration     *float64        `json:"duration,omitempty"`
+	Width        *int            `json:"width,omitempty"`
+	Height       *int            `json:"height,omitempty"`
+	SizeBytes    int64           `json:"size_bytes"`
+	ErrorMessage *string         `json:"error_message,omitempty"`
+	Segments     json.RawMessage `json:"segments,omitempty"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
 }
 
 type TranscodeTask struct {

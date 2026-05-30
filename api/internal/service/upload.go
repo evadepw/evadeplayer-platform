@@ -21,9 +21,10 @@ func NewUploadService(videoRepo VideoStorer, storage BlobStorage, producer TaskE
 }
 
 type UploadInput struct {
-	FileExt string
-	Size    int64
-	Reader  io.Reader
+	FileExt  string
+	Size     int64
+	Reader   io.Reader
+	Segments []byte // optional JSON
 }
 
 func (s *UploadService) Upload(ctx context.Context, in *UploadInput) (*model.Video, error) {
@@ -38,6 +39,7 @@ func (s *UploadService) Upload(ctx context.Context, in *UploadInput) (*model.Vid
 		ID:           videoID,
 		OriginalPath: originalPath,
 		SizeBytes:    in.Size,
+		Segments:     in.Segments,
 	}
 	if err := s.videoRepo.CreateWithID(ctx, v); err != nil {
 		_ = s.storage.Delete(context.Background(), originalPath)

@@ -12,6 +12,7 @@ type VideoStorer interface {
 	FindByID(ctx context.Context, id string) (*model.Video, error)
 	List(ctx context.Context, limit, offset int) ([]*model.Video, int, error)
 	UpdateStatus(ctx context.Context, id string, status model.VideoStatus, errMsg *string) error
+	SetSegments(ctx context.Context, id string, segments []byte) error
 }
 
 type TaskEnqueuer interface {

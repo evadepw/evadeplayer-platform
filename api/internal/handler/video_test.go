@@ -73,6 +73,13 @@ func (m *memVideos) UpdateStatus(_ context.Context, id string, st model.VideoSta
 	return nil
 }
 
+func (m *memVideos) SetSegments(_ context.Context, id string, segments []byte) error {
+	if v, ok := m.byID[id]; ok {
+		v.Segments = segments
+	}
+	return nil
+}
+
 func sampleVideo(id string, status model.VideoStatus) *model.Video {
 	dur := 30.0
 	return &model.Video{

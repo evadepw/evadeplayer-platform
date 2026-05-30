@@ -70,6 +70,31 @@ func (h *VideoHandler) GetStoryboard(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, cues)
 }
 
+func (h *VideoHandler) GetSegments(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing video id")
+		return
+	}
+
+	data, err := h.svc.GetSegments(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "video not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if len(data) == 0 {
+		writeError(w, http.StatusNotFound, "no segments for this video")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
 func (h *VideoHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
