@@ -300,10 +300,10 @@ paths:
                   description: Video file to upload.
                 segments:
                   type: string
+                  format: binary
                   description: |
-                    Optional JSON string (or file) mapping segment names to
-                    `{ start, end }` intervals in seconds.
-                  example: '{"intro":{"start":0,"end":15},"credits":{"start":3540,"end":3600}}'
+                    Optional JSON file mapping segment names to `{ start, end }` intervals in seconds.
+                    Example content: `{"intro":{"start":0,"end":15},"credits":{"start":3540,"end":3600}}`
       responses:
         '202':
           description: Accepted — transcoding job queued
