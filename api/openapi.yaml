@@ -1,28 +1,20 @@
 openapi: 3.1.0
 info:
   title: EvadePlayer API
-  version: 1.0.0
+  version: 2.0.0
   description: |
-    REST API for EvadePlayer — an HLS streaming service.
+    REST API for EvadePlayer — an HLS streaming backend.
 
     ## Authentication
 
-    Two authentication schemes are supported depending on server configuration (`UPLOAD_AUTH`):
+    **Upload** (`POST /videos/upload`) always requires `X-Service-Key` header.
 
-    - **JWT (`bearerAuth`)** — obtained from `POST /auth/login`. Used for user-facing operations.
-    - **Service key (`serviceKeyAuth`)** — static `X-Service-Key` header. Used for machine-to-machine
-      uploads (e.g. a backend pipeline). Configured via `SERVICE_KEY` env variable.
+    **Read** endpoints (`GET /videos`, `GET /videos/{id}`, `GET /videos/{id}/status`,
+    `GET /videos/{id}/storyboard`) are controlled by the `READ_PUBLIC` env variable:
+    - `READ_PUBLIC=true` (default) — publicly accessible, no auth needed
+    - `READ_PUBLIC=false` — `X-Service-Key` required
 
-    Upload endpoint behaviour is controlled by `UPLOAD_AUTH`:
-    | `UPLOAD_AUTH` | Accepted on upload |
-    |---|---|
-    | `jwt` (default) | Bearer JWT only |
-    | `service_key` | `X-Service-Key` only |
-    | `any` | Either JWT or service key |
-
-    Read endpoints (`GET /videos`, `GET /videos/{id}`, `GET /videos/{id}/status`,
-    `GET /videos/{id}/storyboard`, `GET /series`, `GET /series/{id}`) always use JWT.
-    When `AUTH_REQUIRED=false` they are publicly accessible.
+    The service key is configured via `SERVICE_KEY` env variable.
 
     ## HLS playback flow
 
@@ -33,9 +25,8 @@ info:
        - `EXT-X-STREAM-INF` video variant URIs → `/hls-proxy/{videoID}/{codec}/{quality}/index.m3u8?…`
        - `EXT-X-IMAGE-STREAM-INF` preview sprite URI → `/hls-proxy/{videoID}/images/index.m3u8?…`
        - `EXT-X-MAP` init segments → `/hls/{videoID}/{codec}/{quality}/init.mp4?…`
-    4. Player fetches sub-manifests (video, audio, subtitle) through `/hls-proxy/`, which
-       rewrites segment/image URLs → `/hls/{videoID}/…`
-    5. Segments and image stream files (`/hls/…`) are served by nginx directly from SeaweedFS; nginx validates
+    4. Player fetches sub-manifests through `/hls-proxy/`, which rewrites segment URLs → `/hls/{videoID}/…`
+    5. Segments are served by nginx directly from SeaweedFS; nginx validates
        the token via `GET /internal/validate-hls` before proxying.
 
     ## Multi-audio tracks and subtitles
@@ -48,23 +39,6 @@ info:
       `EXT-X-MEDIA:TYPE=AUDIO` renditions with `LANGUAGE` and `NAME` from the source.
     - **Subtitles** — text-based tracks (SRT, SSA/ASS, etc.) are converted to WebVTT HLS
       streams at `subs/{typeIndex}/index.m3u8`. Bitmap codecs (PGS, DVDSUB) are skipped.
-    - The master manifest carries `AUDIO="audio"` and `SUBTITLES="subs"` attributes on
-      every `EXT-X-STREAM-INF` line so compliant HLS players select renditions automatically.
-
-    Alternative video versions (different dubs, localized on-screen text) each have their
-    own independent transcoding pipeline and therefore their own audio tracks and subtitles.
-
-    ## Series and episodes
-
-    Videos can optionally belong to a series (TV show, course, etc.).
-
-    1. `POST /series` — create a series
-    2. `POST /videos/upload` with `series_id` (+ optional `season_number` / `episode_number`)
-       — upload an episode and attach it to the series
-    3. `GET /series/{id}` — retrieve the series with all episodes grouped by season
-
-    Episodes with a `season_number` are returned under `seasons[].episodes`.
-    Episodes without a `season_number` appear in the top-level `episodes` array.
 
 servers:
   - url: /api
@@ -75,42 +49,22 @@ servers:
     description: Via nginx (localhost)
 
 tags:
-  - name: Auth
-    description: Registration and login
   - name: Videos
-    description: Video management and status
-  - name: Series
-    description: Series (shows / collections) and episode grouping
+    description: Video upload, retrieval and status
   - name: HLS
     description: HLS manifest proxy and signed segment delivery
   - name: Media
     description: Static media files served by nginx
   - name: Internal
-    description: Internal endpoints used by nginx infrastructure (not for clients)
+    description: Internal endpoints used by nginx (not for clients)
 
 components:
   securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
-      description: JWT obtained from `POST /auth/login`. TTL 24 h.
     serviceKeyAuth:
       type: apiKey
       in: header
       name: X-Service-Key
-      description: |
-        Static service key for machine-to-machine uploads.
-        Set via `SERVICE_KEY` env variable. Only accepted when `UPLOAD_AUTH` is
-        `service_key` or `any`.
-    userIDHeader:
-      type: apiKey
-      in: header
-      name: X-User-ID
-      description: |
-        Required when `AUTH_MODE=backend` (BFF mode). Must be a valid UUID of the
-        acting user. Sent alongside `X-Service-Key` by the trusted backend.
-        Ignored in `standalone` mode.
+      description: Static service key. Set via `SERVICE_KEY` env variable.
 
   schemas:
     Error:
@@ -121,90 +75,44 @@ components:
           type: string
           example: video not found
 
-    RegisterRequest:
-      type: object
-      required: [email, password]
-      properties:
-        email:
-          type: string
-          format: email
-          example: user@example.com
-        password:
-          type: string
-          minLength: 8
-          example: password123
-
-    LoginRequest:
-      type: object
-      required: [email, password]
-      properties:
-        email:
-          type: string
-          format: email
-          example: user@example.com
-        password:
-          type: string
-          example: password123
-
-    TokenResponse:
-      type: object
-      required: [token]
-      properties:
-        token:
-          type: string
-          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-
-    UserResponse:
-      type: object
-      required: [id, email, created_at]
-      properties:
-        id:
-          type: string
-          format: uuid
-        email:
-          type: string
-          format: email
-        created_at:
-          type: string
-          format: date-time
-
     VideoStatus:
       type: string
       enum: [pending, processing, ready, failed]
 
     Video:
       type: object
-      required: [id, user_id, title, description, status, size_bytes, created_at, updated_at]
+      required: [id, status, progress, size_bytes, created_at, updated_at]
       properties:
         id:
           type: string
           format: uuid
-        user_id:
-          type: string
-          format: uuid
-        title:
-          type: string
-        description:
-          type: string
         status:
           $ref: '#/components/schemas/VideoStatus'
+        progress:
+          type: integer
+          description: Transcoding progress 0–100.
+          example: 42
         duration:
           type: number
           format: float
           nullable: true
           description: Duration in seconds. Null until transcoding completes.
+          example: 3723.5
         width:
           type: integer
           nullable: true
           description: Video width in pixels. Null until transcoding completes.
+          example: 1920
         height:
           type: integer
           nullable: true
           description: Video height in pixels. Null until transcoding completes.
+          example: 1080
         size_bytes:
           type: integer
           format: int64
           description: Original file size in bytes.
+          example: 1073741824
         manifest_url:
           type: string
           nullable: true
@@ -215,107 +123,16 @@ components:
         preview_url:
           type: string
           nullable: true
-          description: Preview image URL. Only present when `status=ready`. Public, no token needed.
+          description: Preview image URL. Only present when `status=ready`.
           example: http://localhost/thumbnails/a1b2c3d4.../preview.jpg
         error_message:
           type: string
           nullable: true
           description: Set when `status=failed`.
-        series_id:
-          type: string
-          format: uuid
-          nullable: true
-          description: The series this video belongs to, if any.
-        season_number:
-          type: integer
-          nullable: true
-          description: Season number within the series.
-        episode_number:
-          type: integer
-          nullable: true
-          description: Episode number within the season.
-        version_of:
-          type: string
-          format: uuid
-          nullable: true
-          description: |
-            ID of the primary video this is an alternative version of.
-            Null for primary videos.
-        version_label:
-          type: string
-          nullable: true
-          description: Short label for this version, e.g. "RU dub".
-        version_description:
-          type: string
-          nullable: true
-          description: Longer description of what distinguishes this version.
-        versions:
-          type: array
-          description: |
-            Alternative versions of this video (e.g. different dubs or cuts).
-            Only present on primary videos (`version_of` is null). Each entry
-            is a lightweight reference — fetch `GET /videos/{id}` for full details.
-          items:
-            $ref: '#/components/schemas/VideoVersion'
         created_at:
           type: string
           format: date-time
         updated_at:
-          type: string
-          format: date-time
-
-    VideoListItem:
-      type: object
-      required: [id, user_id, title, status, size_bytes, created_at]
-      properties:
-        id:
-          type: string
-          format: uuid
-        user_id:
-          type: string
-          format: uuid
-        title:
-          type: string
-        status:
-          $ref: '#/components/schemas/VideoStatus'
-        duration:
-          type: number
-          nullable: true
-        width:
-          type: integer
-          nullable: true
-        height:
-          type: integer
-          nullable: true
-        size_bytes:
-          type: integer
-          format: int64
-        preview_url:
-          type: string
-          nullable: true
-          description: Preview image URL. Only present when `status=ready`.
-          example: http://localhost/thumbnails/a1b2c3d4.../preview.jpg
-        series_id:
-          type: string
-          format: uuid
-          nullable: true
-        season_number:
-          type: integer
-          nullable: true
-        episode_number:
-          type: integer
-          nullable: true
-        version_of:
-          type: string
-          format: uuid
-          nullable: true
-        version_label:
-          type: string
-          nullable: true
-        version_description:
-          type: string
-          nullable: true
-        created_at:
           type: string
           format: date-time
 
@@ -326,7 +143,7 @@ components:
         items:
           type: array
           items:
-            $ref: '#/components/schemas/VideoListItem'
+            $ref: '#/components/schemas/Video'
         total:
           type: integer
           description: Total number of videos (for pagination).
@@ -343,13 +160,16 @@ components:
 
     StatusResponse:
       type: object
-      required: [id, status, updated_at]
+      required: [id, status, progress, updated_at]
       properties:
         id:
           type: string
           format: uuid
         status:
           $ref: '#/components/schemas/VideoStatus'
+        progress:
+          type: integer
+          example: 42
         error_message:
           type: string
           nullable: true
@@ -357,155 +177,17 @@ components:
           type: string
           format: date-time
 
-    VideoVersion:
-      type: object
-      required: [id, label, status]
-      properties:
-        id:
-          type: string
-          format: uuid
-          description: Video ID of the alternative version.
-        label:
-          type: string
-          description: Short name for the version, e.g. "RU dub", "Director's cut".
-          example: RU dub
-        description:
-          type: string
-          description: |
-            Longer description of what distinguishes this version from the primary,
-            e.g. "Russian dub with localized on-screen text and signs".
-          example: Русский дубляж с локализованными надписями и заставками
-        status:
-          $ref: '#/components/schemas/VideoStatus'
-        preview_url:
-          type: string
-          nullable: true
-          description: Preview image URL. Only present when `status=ready`.
-          example: http://localhost/thumbnails/a1b2c3d4.../preview.jpg
-
-    # ── Series schemas ─────────────────────────────────────────────────────────
-
-    CreateSeriesRequest:
-      type: object
-      required: [title]
-      properties:
-        title:
-          type: string
-          example: Breaking Bad
-        description:
-          type: string
-          example: A chemistry teacher becomes a drug lord.
-
-    Series:
-      type: object
-      required: [id, user_id, title, description, episode_count, created_at, updated_at]
-      properties:
-        id:
-          type: string
-          format: uuid
-        user_id:
-          type: string
-          format: uuid
-        title:
-          type: string
-          example: Breaking Bad
-        description:
-          type: string
-        episode_count:
-          type: integer
-          description: Total number of episodes attached to this series.
-        created_at:
-          type: string
-          format: date-time
-        updated_at:
-          type: string
-          format: date-time
-
-    Episode:
-      type: object
-      required: [id, title, status]
-      properties:
-        id:
-          type: string
-          format: uuid
-          description: Video ID of the episode.
-        title:
-          type: string
-        season_number:
-          type: integer
-          nullable: true
-        episode_number:
-          type: integer
-          nullable: true
-        duration:
-          type: number
-          format: float
-          nullable: true
-          description: Duration in seconds. Null until transcoding completes.
-        status:
-          $ref: '#/components/schemas/VideoStatus'
-        preview_url:
-          type: string
-          nullable: true
-          description: Preview image URL. Only present when `status=ready`.
-          example: http://localhost/thumbnails/a1b2c3d4.../preview.jpg
-        versions:
-          type: array
-          description: Alternative versions of this episode (different dubs or cuts).
-          items:
-            $ref: '#/components/schemas/VideoVersion'
-
-    Season:
-      type: object
-      required: [season_number, episodes]
-      properties:
-        season_number:
-          type: integer
-        episodes:
-          type: array
-          items:
-            $ref: '#/components/schemas/Episode'
-
-    SeriesDetail:
-      allOf:
-        - $ref: '#/components/schemas/Series'
-        - type: object
-          required: [seasons, episodes]
-          properties:
-            seasons:
-              type: array
-              description: Episodes that have a `season_number`, grouped by season.
-              items:
-                $ref: '#/components/schemas/Season'
-            episodes:
-              type: array
-              description: Episodes without a `season_number` (flat list).
-              items:
-                $ref: '#/components/schemas/Episode'
-
-    SeriesListResponse:
-      type: object
-      required: [items, total]
-      properties:
-        items:
-          type: array
-          items:
-            $ref: '#/components/schemas/Series'
-        total:
-          type: integer
-          description: Total number of series (for pagination).
-
     StoryboardCoords:
       type: object
       required: [x, y]
       properties:
         x:
           type: integer
-          description: Horizontal offset of the frame within the sprite sheet, in pixels.
+          description: Horizontal offset within the sprite sheet, in pixels.
           example: 320
         y:
           type: integer
-          description: Vertical offset of the frame within the sprite sheet, in pixels.
+          description: Vertical offset within the sprite sheet, in pixels.
           example: 0
 
     StoryboardCue:
@@ -519,236 +201,25 @@ components:
         start_time:
           type: number
           format: float
-          description: Start of the time interval this frame represents, in seconds.
+          description: Start of the interval in seconds.
           example: 10
         end_time:
           type: number
           format: float
-          description: End of the time interval, in seconds. Clamped to video duration on the last cue.
+          description: End of the interval in seconds. Clamped to video duration on last cue.
           example: 20
         width:
           type: integer
-          description: Width of a single frame tile in the sprite sheet, in pixels.
+          description: Width of a single tile in pixels.
           example: 320
         height:
           type: integer
-          description: Height of a single frame tile in the sprite sheet, in pixels.
+          description: Height of a single tile in pixels.
           example: 180
         coords:
           $ref: '#/components/schemas/StoryboardCoords'
 
 paths:
-  # ── Auth ────────────────────────────────────────────────────────────────────
-
-  /auth/register:
-    post:
-      tags: [Auth]
-      summary: Register a new user
-      description: |
-        Creates a new user account. Only available when `ALLOW_REGISTRATION=true`
-        (default). Returns 404 when registration is disabled.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RegisterRequest'
-      responses:
-        '201':
-          description: User created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/UserResponse'
-        '400':
-          description: Validation error (missing fields, invalid email, etc.)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '404':
-          description: Registration is disabled (`ALLOW_REGISTRATION=false`)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '409':
-          description: Email already registered
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /auth/login:
-    post:
-      tags: [Auth]
-      summary: Log in and get a JWT
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/LoginRequest'
-      responses:
-        '200':
-          description: JWT (24 h TTL)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TokenResponse'
-        '400':
-          description: Missing or malformed request body
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '401':
-          description: Invalid email or password
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  # ── Series ───────────────────────────────────────────────────────────────────
-
-  /series:
-    post:
-      tags: [Series]
-      summary: Create a series
-      description: |
-        Creates a new series (TV show, course, collection, etc.).
-        The authenticated user becomes the owner; only the owner can attach episodes.
-
-        In `backend` auth mode (`AUTH_MODE=backend`), send both `X-Service-Key` and
-        `X-User-ID` headers. `X-User-ID` identifies the acting user and is required.
-      security:
-        - bearerAuth: []
-        - serviceKeyAuth: []
-        - serviceKeyAuth: []
-          userIDHeader: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreateSeriesRequest'
-      responses:
-        '201':
-          description: Series created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Series'
-        '400':
-          description: Missing or invalid title
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '401':
-          description: Missing or invalid credentials
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: Internal error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-    get:
-      tags: [Series]
-      summary: List series
-      description: |
-        Returns a paginated list of series. When `AUTH_REQUIRED=false` the endpoint
-        is public; otherwise a valid JWT is required.
-      security:
-        - bearerAuth: []
-        - {}
-      parameters:
-        - name: page
-          in: query
-          description: Page number (1-based)
-          schema:
-            type: integer
-            default: 1
-            minimum: 1
-        - name: page_size
-          in: query
-          description: Items per page (clamped to 1–100)
-          schema:
-            type: integer
-            default: 20
-            minimum: 1
-            maximum: 100
-      responses:
-        '200':
-          description: Series list
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SeriesListResponse'
-        '401':
-          description: Auth required but no valid token provided
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: Internal error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /series/{id}:
-    get:
-      tags: [Series]
-      summary: Get series with episodes
-      description: |
-        Returns full series metadata plus all attached episodes.
-
-        Episodes that have a `season_number` are grouped into `seasons[].episodes`,
-        ordered by season then episode number. Episodes without a `season_number`
-        appear in the top-level `episodes` array.
-      security:
-        - bearerAuth: []
-        - {}
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        '200':
-          description: Series detail with episodes
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SeriesDetail'
-        '401':
-          description: Auth required but no valid token provided
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '404':
-          description: Series not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: Internal error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
   # ── Videos ──────────────────────────────────────────────────────────────────
 
   /videos/upload:
@@ -759,97 +230,23 @@ paths:
         Accepts a multipart upload, stores the original in SeaweedFS, and enqueues
         a transcoding job. Responds immediately with `202 Accepted`.
 
-        **Max file size:** 10 GB.
-
         **Supported formats:** `.mp4`, `.mkv`, `.mov`, `.avi`, `.webm`, `.m4v`.
 
-        **Preview override:** include an optional `preview` image (`.jpg`, `.jpeg`,
-        `.png`, `.webp`, max 20 MB) to use it as `preview_url` instead of the
-        autogenerated preview. Omit the field or send `null` to keep automatic
-        preview generation.
-
-        **Episode upload** — to attach the video to a series, include `series_id`.
-        `season_number` and `episode_number` are optional and independent of each
-        other. The series must belong to the authenticated user; otherwise `400` is
-        returned.
-
-        **Auth mode** is controlled by `UPLOAD_AUTH` env variable — see the
-        Authentication section in the API description.
-
-        In `backend` auth mode (`AUTH_MODE=backend`), send both `X-Service-Key` and
-        `X-User-ID` headers. `X-User-ID` identifies the acting user and is required.
+        **Max file size:** configured via `MAX_UPLOAD_SIZE_GB` (default 50 GB).
       security:
-        - bearerAuth: []
         - serviceKeyAuth: []
-        - serviceKeyAuth: []
-          userIDHeader: []
       requestBody:
         required: true
         content:
           multipart/form-data:
             schema:
               type: object
-              required: [title, file]
+              required: [file]
               properties:
-                title:
-                  type: string
-                  example: My Video
-                description:
-                  type: string
-                  example: Optional description
                 file:
                   type: string
                   format: binary
-                preview:
-                  type: string
-                  format: binary
-                  nullable: true
-                  description: |
-                    Optional preview image override. Accepted formats: `.jpg`, `.jpeg`,
-                    `.png`, `.webp`; max size 20 MB. Stored as `preview.jpg` and not
-                    overwritten by transcoding. Omit or send `null` to autogenerate.
-                series_id:
-                  type: string
-                  format: uuid
-                  description: |
-                    Attach this video to an existing series. The series must be owned
-                    by the authenticated user. Ignored if `version_of` is set.
-                  example: 3fa85f64-5717-4562-b3fc-2c963f66afa6
-                season_number:
-                  type: integer
-                  minimum: 1
-                  description: Season number within the series. Ignored if `series_id` is not set.
-                  example: 2
-                episode_number:
-                  type: integer
-                  minimum: 1
-                  description: Episode number within the season. Ignored if `series_id` is not set.
-                  example: 5
-                version_of:
-                  type: string
-                  format: uuid
-                  description: |
-                    ID of an existing primary video this upload is an alternative version of
-                    (e.g. a dub with localized on-screen text). When set, `series_id`,
-                    `season_number`, and `episode_number` are ignored — the version is
-                    accessed through its parent. Cannot point to a video that is itself
-                    a version (no chaining).
-                  example: 3fa85f64-5717-4562-b3fc-2c963f66afa6
-                version_label:
-                  type: string
-                  description: |
-                    Short label for this version, e.g. "RU dub", "EN dub",
-                    "Director's cut". Used when `version_of` is set.
-                  example: RU dub
-                version_description:
-                  type: string
-                  description: |
-                    Longer description of what distinguishes this version from the
-                    primary, shown to the user when selecting a version.
-                  example: Русский дубляж с локализованными надписями и заставками
-            encoding:
-              preview:
-                contentType: image/jpeg, image/png, image/webp
+                  description: Video file to upload.
       responses:
         '202':
           description: Accepted — transcoding job queued
@@ -858,21 +255,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/UploadResponse'
         '400':
-          description: |
-            Missing title, missing file, unsupported format, series not found,
-            video not found (`version_of`), or version chaining attempt
+          description: Missing file or unsupported format
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
         '401':
-          description: Missing or invalid credentials
+          description: Missing or invalid service key
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
         '413':
-          description: Video exceeds the 10 GB limit or preview exceeds the 20 MB limit
+          description: File exceeds the configured size limit
           content:
             application/json:
               schema:
@@ -889,10 +284,10 @@ paths:
       tags: [Videos]
       summary: List videos
       description: |
-        Returns a paginated list of videos. When `AUTH_REQUIRED=false` the endpoint
-        is public; otherwise a valid JWT is required.
+        Returns a paginated list of videos. Public when `READ_PUBLIC=true` (default);
+        requires `X-Service-Key` when `READ_PUBLIC=false`.
       security:
-        - bearerAuth: []
+        - serviceKeyAuth: []
         - {}
       parameters:
         - name: page
@@ -918,7 +313,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/VideoListResponse'
         '401':
-          description: Auth required but no valid token provided
+          description: Service key required but missing or invalid
           content:
             application/json:
               schema:
@@ -935,10 +330,13 @@ paths:
       tags: [Videos]
       summary: Get video details
       description: |
-        Returns full video metadata. When the video is `ready`, includes a signed
+        Returns video metadata. When `status=ready`, includes a signed
         `manifest_url` (4 h TTL) and `preview_url`.
+
+        Public when `READ_PUBLIC=true` (default); requires `X-Service-Key`
+        when `READ_PUBLIC=false`.
       security:
-        - bearerAuth: []
+        - serviceKeyAuth: []
         - {}
       parameters:
         - name: id
@@ -955,7 +353,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Video'
         '401':
-          description: Auth required but no valid token provided
+          description: Service key required but missing or invalid
           content:
             application/json:
               schema:
@@ -977,9 +375,13 @@ paths:
     get:
       tags: [Videos]
       summary: Poll transcoding status
-      description: Lightweight endpoint for polling. Returns just the status fields.
+      description: |
+        Lightweight polling endpoint. Returns status, progress and error fields only.
+
+        Public when `READ_PUBLIC=true` (default); requires `X-Service-Key`
+        when `READ_PUBLIC=false`.
       security:
-        - bearerAuth: []
+        - serviceKeyAuth: []
         - {}
       parameters:
         - name: id
@@ -996,7 +398,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/StatusResponse'
         '401':
-          description: Auth required but no valid token provided
+          description: Service key required but missing or invalid
           content:
             application/json:
               schema:
@@ -1019,18 +421,21 @@ paths:
       tags: [Videos]
       summary: Get storyboard cues
       description: |
-        Returns an array of storyboard cues for JS-based video players (Video.js, Plyr, etc.)
-        that do not support the native HLS Image Stream (`EXT-X-IMAGE-STREAM-INF`).
+        Returns an array of storyboard cues for players that do not support the
+        native HLS Image Stream (`EXT-X-IMAGE-STREAM-INF`).
 
-        Each cue maps a time interval to a frame region within the sprite sheet at
-        `/thumbnails/{videoID}/sprite.jpg`. The sprite is generated during transcoding with
-        one frame per `SPRITE_INTERVAL_SECONDS` seconds (default: 10), tiled in a grid of
-        `SPRITE_COLUMNS` columns (default: 10) at `SPRITE_WIDTH`×`SPRITE_HEIGHT` px
-        (default: 320×180) per frame.
+        Each cue maps a time interval to a tile region within the sprite sheet at
+        `/thumbnails/{videoID}/sprite.jpg`. The sprite is generated during transcoding
+        with one frame per `SPRITE_INTERVAL_SECONDS` (default 10 s), tiled in a grid of
+        `SPRITE_COLUMNS` columns (default 10) at `SPRITE_WIDTH`×`SPRITE_HEIGHT` px
+        (default 320×180) per tile.
 
         Returns `404` if the video does not exist or has not yet reached `status=ready`.
+
+        Public when `READ_PUBLIC=true` (default); requires `X-Service-Key`
+        when `READ_PUBLIC=false`.
       security:
-        - bearerAuth: []
+        - serviceKeyAuth: []
         - {}
       parameters:
         - name: id
@@ -1062,7 +467,7 @@ paths:
                   height: 180
                   coords: { x: 320, y: 0 }
         '401':
-          description: Auth required but no valid token provided
+          description: Service key required but missing or invalid
           content:
             application/json:
               schema:
@@ -1091,19 +496,18 @@ paths:
         signed tokens, and returns the result.
 
         The following rewrites are applied:
-        - **`EXT-X-MEDIA` URIs** (audio and subtitle sub-playlists) → `/hls-proxy/{videoID}/…`
+        - **`EXT-X-MEDIA` URIs** (audio/subtitle sub-playlists) → `/hls-proxy/{videoID}/…`
         - **`EXT-X-STREAM-INF` variant URIs** (video quality playlists) → `/hls-proxy/{videoID}/…`
         - **`EXT-X-IMAGE-STREAM-INF` URI** (preview sprite playlist) → `/hls-proxy/{videoID}/images/index.m3u8?…`
         - **`EXT-X-MAP` URIs** (fMP4 init segments) → `/hls/{videoID}/…`
-        - **Segment/image lines** (`.m4s`, `.jpg`) → `/hls/{videoID}/…`
+        - **Segment lines** (`.m4s`, `.jpg`, `.vtt`) → `/hls/{videoID}/…`
 
-        The URL for the master manifest is returned by `GET /videos/{id}` as
-        `manifest_url` and is already signed — clients should use it as-is.
+        The `manifest_url` returned by `GET /videos/{id}` is already signed —
+        pass it directly to the player.
 
-        **`codec` filter** — when requesting `master.m3u8`, appending `&codec=h264`
-        (or `h265`, `av1`) limits the playlist to that codec's video renditions. Useful
-        when the player supports only one codec. Falls back to the full playlist if
-        no matching rendition exists. Audio and subtitle tracks are unaffected by this filter.
+        **`codec` filter** — appending `&codec=h264` (or `h265`, `av1`) to `master.m3u8`
+        limits the playlist to that codec's renditions. Falls back to the full playlist
+        if no matching rendition exists.
       parameters:
         - name: videoID
           in: path
@@ -1111,7 +515,6 @@ paths:
           schema:
             type: string
             format: uuid
-          description: Video identifier
         - name: file
           in: path
           required: true
@@ -1119,7 +522,7 @@ paths:
             type: string
           description: |
             Relative path within the HLS tree.
-            Examples: `master.m3u8`, `h264/360p/index.m3u8`, `audio/0/index.m3u8`, `subs/0/index.m3u8`, `images/index.m3u8`
+            Examples: `master.m3u8`, `h264/360p/index.m3u8`, `audio/0/index.m3u8`, `images/index.m3u8`
         - name: token
           in: query
           required: true
@@ -1163,28 +566,22 @@ paths:
   /hls/{videoID}/{path}:
     get:
       tags: [HLS]
-      summary: Serve HLS media, image, or subtitle file
+      summary: Serve HLS segment or subtitle file
       description: |
-        Serves raw HLS media files from SeaweedFS. `{path}` is a multi-segment
-        path within the video's HLS tree.
+        Serves raw HLS media files from SeaweedFS. Handled by nginx — the API
+        service itself does not process this path.
 
-        **Path patterns:**
+        nginx validates the token via `GET /internal/validate-hls` before proxying.
+        Clients should not construct segment URLs manually; they are embedded in the
+        rewritten manifests returned by `/hls-proxy/`.
 
         | File type | Example path |
         |---|---|
         | Video segment (fMP4) | `h264/720p/chunk001.m4s` |
         | fMP4 init segment | `h264/720p/init.mp4` |
-        | Audio segment (fMP4) | `audio/0/chunk001.m4s` |
+        | Audio segment | `audio/0/chunk001.m4s` |
         | Image stream sprite | `images/sprite.jpg` |
         | Subtitle (WebVTT) | `subs/0/chunk001.vtt` |
-
-        **Served by nginx directly** — nginx validates the token via
-        `GET /internal/validate-hls` before proxying to SeaweedFS. The API service
-        itself does not handle this path.
-
-        URLs for all segments are embedded in the rewritten manifests returned by
-        `/hls-proxy/` — clients should not construct them manually.
-
       servers:
         - url: http://localhost
           description: Via nginx (port 80)
@@ -1200,9 +597,6 @@ paths:
           required: true
           schema:
             type: string
-          description: |
-            Multi-segment path within the video's HLS tree.
-            Examples: `h264/360p/chunk001.m4s`, `audio/0/chunk001.m4s`, `images/sprite.jpg`, `subs/0/chunk001.vtt`
         - name: token
           in: query
           required: true
@@ -1216,7 +610,7 @@ paths:
             format: int64
       responses:
         '200':
-          description: HLS media, image, or subtitle data
+          description: HLS media or subtitle data
           content:
             video/mp4:
               schema:
@@ -1240,9 +634,8 @@ paths:
       tags: [Media]
       summary: Video preview image
       description: |
-        A single JPEG preview frame generated during transcoding. Public — no token required.
-
-        **Served by nginx directly** from SeaweedFS.
+        A JPEG preview frame generated during transcoding. Public — no token required.
+        Served by nginx directly from SeaweedFS.
       servers:
         - url: http://localhost
           description: Via nginx (port 80)
@@ -1267,17 +660,18 @@ paths:
                 type: string
                 example: public, max-age=86400
         '404':
-          description: Preview not generated yet or video does not exist
+          description: Preview not yet generated or video does not exist
 
   /thumbnails/{videoID}/sprite.jpg:
     get:
       tags: [Media]
       summary: Preview sprite sheet
       description: |
-        A JPEG sprite sheet with one frame every 10 seconds (320×180 px per frame,
-        10 columns). Generated during transcoding. Public — no token required.
-
-        **Served by nginx directly** from SeaweedFS.
+        A JPEG sprite sheet with one frame every `SPRITE_INTERVAL_SECONDS` seconds
+        (default 10 s), `SPRITE_COLUMNS` columns (default 10), at
+        `SPRITE_WIDTH`×`SPRITE_HEIGHT` px (default 320×180) per tile.
+        Generated during transcoding. Public — no token required.
+        Served by nginx directly from SeaweedFS.
       servers:
         - url: http://localhost
           description: Via nginx (port 80)
@@ -1302,14 +696,33 @@ paths:
                 type: string
                 example: public, max-age=86400
         '404':
-          description: Preview sprite not generated yet or video does not exist
+          description: Sprite not yet generated or video does not exist
 
   # ── Infrastructure ──────────────────────────────────────────────────────────
+
+  /healthz:
+    get:
+      tags: [Internal]
+      summary: Health check
+      description: Returns `{"status":"ok"}` if the API and Postgres are reachable.
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+        '503':
+          description: Postgres unreachable
 
   /health:
     get:
       tags: [Internal]
-      summary: Health check
+      summary: nginx health check
       description: Returns `ok`. Handled by nginx, not the API service.
       servers:
         - url: http://localhost
@@ -1328,10 +741,8 @@ paths:
       tags: [Internal]
       summary: Validate HLS token (nginx subrequest)
       description: |
-        Used exclusively by nginx via `auth_request` to validate the token on HLS
-        segment requests. Clients must not call this endpoint directly.
-
-        Query parameters are forwarded by nginx from the parent segment request.
+        Used exclusively by nginx via `auth_request` to validate tokens on HLS
+        segment requests. Do not call this endpoint directly.
       parameters:
         - name: video_id
           in: query
@@ -1352,6 +763,6 @@ paths:
             format: int64
       responses:
         '200':
-          description: Token valid — nginx proceeds with the segment request
+          description: Token valid
         '401':
-          description: Token invalid or expired — nginx returns 401 to the client
+          description: Token invalid or expired
