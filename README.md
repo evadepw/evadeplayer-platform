@@ -1,6 +1,6 @@
 <div align="center">
 
-# EvadePlayer
+# EvadePlayer Platform
 
 ### Fast, simple, and convenient backend for your video player.
 
