@@ -13,6 +13,7 @@ type VideoStorer interface {
 	List(ctx context.Context, limit, offset int) ([]*model.Video, int, error)
 	UpdateStatus(ctx context.Context, id string, status model.VideoStatus, errMsg *string) error
 	SetSegments(ctx context.Context, id string, segments []byte) error
+	DeleteByID(ctx context.Context, id string) error
 }
 
 type TaskEnqueuer interface {
@@ -22,4 +23,5 @@ type TaskEnqueuer interface {
 type BlobStorage interface {
 	Upload(ctx context.Context, filePath string, r io.Reader, contentType string) error
 	Delete(ctx context.Context, filePath string) error
+	DeleteDir(ctx context.Context, dirPath string) error
 }

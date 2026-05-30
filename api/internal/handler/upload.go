@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/evadeplayer/api/internal/repository"
 	"github.com/evadeplayer/api/internal/service"
 )
 
@@ -95,4 +97,23 @@ func (h *UploadHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		"id":     video.ID,
 		"status": video.Status,
 	})
+}
+
+func (h *UploadHandler) DeleteVideo(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing video id")
+		return
+	}
+
+	if err := h.svc.DeleteVideo(r.Context(), id); err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "video not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }

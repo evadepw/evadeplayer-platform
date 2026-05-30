@@ -104,3 +104,20 @@ func (s *SeaweedFS) Delete(ctx context.Context, filePath string) error {
 	}
 	return nil
 }
+
+func (s *SeaweedFS) DeleteDir(ctx context.Context, dirPath string) error {
+	url := s.filerURL + "/" + strings.TrimLeft(dirPath, "/") + "?recursive=true"
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	if err != nil {
+		return fmt.Errorf("create delete request: %w", err)
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("delete dir from seaweedfs: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 && resp.StatusCode != http.StatusNotFound {
+		return fmt.Errorf("seaweedfs delete dir failed: status=%d", resp.StatusCode)
+	}
+	return nil
+}

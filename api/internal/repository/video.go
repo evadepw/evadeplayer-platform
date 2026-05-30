@@ -55,6 +55,18 @@ func (r *VideoRepo) FindByID(ctx context.Context, id string) (*model.Video, erro
 	return v, nil
 }
 
+func (r *VideoRepo) DeleteByID(ctx context.Context, id string) error {
+	q := `DELETE FROM videos WHERE id = $1`
+	tag, err := r.db.Exec(ctx, q, id)
+	if err != nil {
+		return fmt.Errorf("delete video: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (r *VideoRepo) SetSegments(ctx context.Context, id string, segments []byte) error {
 	q := `UPDATE videos SET segments = $1 WHERE id = $2`
 	_, err := r.db.Exec(ctx, q, segments, id)

@@ -30,6 +30,10 @@ func (f *fakeStorage) Delete(_ context.Context, path string) error {
 	f.deletes = append(f.deletes, path)
 	return nil
 }
+func (f *fakeStorage) DeleteDir(_ context.Context, path string) error {
+	f.deletes = append(f.deletes, path)
+	return nil
+}
 
 type fakeProducer struct {
 	task *model.TranscodeTask

@@ -168,3 +168,10 @@ func (f *fakeVideoStore) SetSegments(_ context.Context, id string, segments []by
 	}
 	return nil
 }
+
+func (f *fakeVideoStore) DeleteByID(_ context.Context, id string) error {
+	if f.video != nil && f.video.ID == id {
+		f.video = nil
+	}
+	return nil
+}

@@ -95,6 +95,7 @@ func main() {
 	mux.HandleFunc("GET /hls-proxy/", hlsManifestH.ServeManifest)
 
 	mux.Handle("POST /videos/upload", uploadMW(http.HandlerFunc(uploadH.Upload)))
+	mux.Handle("DELETE /videos/{id}", uploadMW(http.HandlerFunc(uploadH.DeleteVideo)))
 	mux.Handle("GET /videos", readMW(http.HandlerFunc(videoH.ListVideos)))
 	mux.Handle("GET /videos/{id}", readMW(http.HandlerFunc(videoH.GetVideo)))
 	mux.Handle("GET /videos/{id}/status", readMW(http.HandlerFunc(videoH.GetStatus)))

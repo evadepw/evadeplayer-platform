@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 
 	"github.com/google/uuid"
 
@@ -57,4 +58,21 @@ func (s *UploadService) Upload(ctx context.Context, in *UploadInput) (*model.Vid
 	}
 
 	return v, nil
+}
+
+func (s *UploadService) DeleteVideo(ctx context.Context, id string) error {
+	if err := s.videoRepo.DeleteByID(ctx, id); err != nil {
+		return err
+	}
+	// Best-effort: log failures but don't fail the request.
+	for _, dir := range []string{
+		"originals/" + id,
+		"hls/" + id,
+		"thumbnails/" + id,
+	} {
+		if err := s.storage.DeleteDir(ctx, dir); err != nil {
+			log.Printf("[delete] failed to remove %s: %v", dir, err)
+		}
+	}
+	return nil
 }

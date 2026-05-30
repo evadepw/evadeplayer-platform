@@ -80,6 +80,11 @@ func (m *memVideos) SetSegments(_ context.Context, id string, segments []byte) e
 	return nil
 }
 
+func (m *memVideos) DeleteByID(_ context.Context, id string) error {
+	delete(m.byID, id)
+	return nil
+}
+
 func sampleVideo(id string, status model.VideoStatus) *model.Video {
 	dur := 30.0
 	return &model.Video{
