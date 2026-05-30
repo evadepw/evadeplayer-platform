@@ -427,6 +427,45 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+    delete:
+      tags: [Videos]
+      summary: Delete a video
+      description: |
+        Deletes the video record from the database and removes all associated files
+        from storage (`originals/`, `hls/`, `thumbnails/`). File deletion is
+        best-effort — the request succeeds even if some files could not be removed.
+
+        Requires `X-Service-Key` header.
+      security:
+        - serviceKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Deleted successfully
+        '401':
+          description: Missing or invalid service key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Video not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /videos/{id}/status:
     get:
@@ -531,47 +570,6 @@ paths:
                 $ref: '#/components/schemas/Error'
         '404':
           description: Video not found or not yet ready
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: Internal error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /videos/{id}:
-    delete:
-      tags: [Videos]
-      summary: Delete a video
-      description: |
-        Deletes the video record from the database and removes all associated files
-        from storage (`originals/`, `hls/`, `thumbnails/`). File deletion is
-        best-effort — the request succeeds even if some files could not be removed.
-
-        Requires `X-Service-Key` header.
-      security:
-        - serviceKeyAuth: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        '204':
-          description: Deleted successfully
-        '401':
-          description: Missing or invalid service key
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '404':
-          description: Video not found
           content:
             application/json:
               schema:
