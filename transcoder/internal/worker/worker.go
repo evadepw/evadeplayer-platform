@@ -150,7 +150,18 @@ func (w *Worker) process(ctx context.Context, task TranscodeTask) error {
 	w.setProgress(ctx, task.VideoID, 15)
 
 	hlsDir := filepath.Join(workDir, "hls")
-	variants, err := ffmpeg.TranscodeHLS(ctx, localOriginal, hlsDir, probe.Width, probe.Height, w.hlsSegmentSeconds, probe.FrameRate, w.accel, w.codecs, w.qualities, len(probe.Audio) > 0, w.encodingConfig)
+	var lastProgressUpdate time.Time
+	variants, err := ffmpeg.TranscodeHLS(ctx, localOriginal, hlsDir, probe.Width, probe.Height, w.hlsSegmentSeconds, probe.FrameRate, probe.Duration, w.accel, w.codecs, w.qualities, len(probe.Audio) > 0, w.encodingConfig, func(f float64) {
+		if time.Since(lastProgressUpdate) < time.Second {
+			return
+		}
+		lastProgressUpdate = time.Now()
+		pct := 15 + int(f*50)
+		if pct > 64 {
+			pct = 64
+		}
+		w.setProgress(ctx, task.VideoID, pct)
+	})
 	if err != nil {
 		return fmt.Errorf("transcode HLS: %w", err)
 	}

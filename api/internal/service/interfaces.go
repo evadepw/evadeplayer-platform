@@ -10,6 +10,7 @@ import (
 type VideoStorer interface {
 	CreateWithID(ctx context.Context, v *model.Video) error
 	FindByID(ctx context.Context, id string) (*model.Video, error)
+	FindByIDs(ctx context.Context, ids []string) (map[string]*model.Video, error)
 	List(ctx context.Context, limit, offset int) ([]*model.Video, int, error)
 	UpdateStatus(ctx context.Context, id string, status model.VideoStatus, errMsg *string) error
 	SetSegments(ctx context.Context, id string, segments []byte) error

@@ -53,6 +53,19 @@ info:
     - **Subtitles** — text-based tracks (SRT, SSA/ASS, etc.) are converted to WebVTT HLS
       streams at `subs/{typeIndex}/index.m3u8`. Bitmap codecs (PGS, DVDSUB) are skipped.
 
+    `GET /videos/{id}` returns `audio_tracks` and `subtitle_tracks` arrays with per-track
+    `index`, `language`, `title`, and a direct `manifest_url` for each track.
+
+    ### Filtering the master manifest
+
+    Append `audio=<index>` and/or `subs=<index>` to `master.m3u8` to receive a manifest
+    that contains only the specified track(s). The selected audio track is automatically
+    promoted to `DEFAULT=YES`. All three filters (`codec`, `audio`, `subs`) can be combined:
+
+    ```
+    /hls-proxy/{videoID}/master.m3u8?codec=h264&audio=3&subs=1&token=…&expires=…
+    ```
+
 servers:
   - url: /api
     description: Current host via nginx (relative — works from any deployment)
@@ -122,6 +135,48 @@ components:
           start: 3540
           end: 3600
 
+    AudioTrack:
+      type: object
+      required: [index, manifest_url]
+      properties:
+        index:
+          type: integer
+          description: Zero-based track index used in `audio/<index>/index.m3u8` paths.
+          example: 0
+        language:
+          type: string
+          description: BCP-47 / ISO 639-2 language code from the source file.
+          example: rus
+        title:
+          type: string
+          description: Human-readable track name from the source file.
+          example: DD 5.1 @ 640 kbps (AVO Goblin)
+        manifest_url:
+          type: string
+          description: Pre-signed URL for the audio-only HLS sub-playlist.
+          example: http://localhost/hls-proxy/a1b2c3d4.../audio/0/index.m3u8?token=abc&expires=1700000000
+
+    SubtitleTrack:
+      type: object
+      required: [index, manifest_url]
+      properties:
+        index:
+          type: integer
+          description: Zero-based track index used in `subs/<index>/index.m3u8` paths.
+          example: 0
+        language:
+          type: string
+          description: BCP-47 / ISO 639-2 language code from the source file.
+          example: eng
+        title:
+          type: string
+          description: Human-readable track name from the source file.
+          example: SRT (English)
+        manifest_url:
+          type: string
+          description: Pre-signed URL for the WebVTT HLS sub-playlist.
+          example: http://localhost/hls-proxy/a1b2c3d4.../subs/1/index.m3u8?token=abc&expires=1700000000
+
     Video:
       type: object
       required: [id, status, progress, size_bytes, created_at, updated_at]
@@ -168,6 +223,25 @@ components:
           nullable: true
           description: Preview image URL. Only present when `status=ready`.
           example: http://localhost/thumbnails/a1b2c3d4.../preview.jpg
+        audio_tracks:
+          type: array
+          nullable: true
+          description: |
+            Audio renditions extracted from the source. Only present when `status=ready`
+            and the source contains more than one audio track (or an explicitly named track).
+            Use `index` to filter the master manifest via `?audio=<index>`.
+          items:
+            $ref: '#/components/schemas/AudioTrack'
+        subtitle_tracks:
+          type: array
+          nullable: true
+          description: |
+            Text-based subtitle tracks (WebVTT) extracted from the source. Only present
+            when `status=ready` and the source contains supported subtitle tracks.
+            Bitmap-based codecs (PGS, DVDSUB) are skipped.
+            Use `index` to filter the master manifest via `?subs=<index>`.
+          items:
+            $ref: '#/components/schemas/SubtitleTrack'
         error_message:
           type: string
           nullable: true
@@ -183,6 +257,24 @@ components:
         updated_at:
           type: string
           format: date-time
+
+    TokenResponse:
+      type: object
+      required: [token, expires, manifest_url]
+      properties:
+        token:
+          type: string
+          description: HMAC-SHA256 token signed with `HLS_TOKEN_SECRET`.
+          example: d6fe98fac9c3b065...
+        expires:
+          type: integer
+          format: int64
+          description: Unix timestamp after which the token is invalid (4 h TTL).
+          example: 1780237413
+        manifest_url:
+          type: string
+          description: Pre-signed HLS master manifest URL ready to pass to a player.
+          example: http://localhost/hls-proxy/a1b2c3d4.../master.m3u8?token=abc&expires=1700000000
 
     VideoListResponse:
       type: object
@@ -467,6 +559,82 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /videos/tokens:
+    post:
+      tags: [Videos]
+      summary: Batch-issue HLS tokens
+      description: |
+        Issues HLS tokens for multiple videos in a single request. Useful when a
+        player needs to pre-sign several streams without making one request per video.
+
+        The response map always contains an entry for every requested ID.
+        Videos that are not found or have not yet reached `status=ready` have a `null` value.
+
+        Maximum 100 IDs per request.
+
+        Public when `READ_PUBLIC=true` (default); requires `X-Service-Key`
+        when `READ_PUBLIC=false`.
+      security:
+        - serviceKeyAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids]
+              properties:
+                ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                  minItems: 1
+                  maxItems: 100
+                  example:
+                    - a1b2c3d4-0000-0000-0000-000000000001
+                    - a1b2c3d4-0000-0000-0000-000000000002
+      responses:
+        '200':
+          description: Token map — null for videos that are not found or not ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tokens:
+                    type: object
+                    additionalProperties:
+                      oneOf:
+                        - $ref: '#/components/schemas/TokenResponse'
+                        - type: 'null'
+              example:
+                tokens:
+                  a1b2c3d4-0000-0000-0000-000000000001:
+                    token: d6fe98fa...
+                    expires: 1780237413
+                    manifest_url: http://localhost/hls-proxy/a1b2c3d4.../master.m3u8?token=...
+                  a1b2c3d4-0000-0000-0000-000000000002: null
+        '400':
+          description: Missing or invalid body, or more than 100 IDs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Service key required but missing or invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /videos/{id}/download:
     get:
       tags: [Videos]
@@ -699,9 +867,17 @@ paths:
         The `manifest_url` returned by `GET /videos/{id}` is already signed —
         pass it directly to the player.
 
-        **`codec` filter** — appending `&codec=h264` (or `h265`, `av1`) to `master.m3u8`
-        limits the playlist to that codec's renditions. Falls back to the full playlist
-        if no matching rendition exists.
+        ### Master manifest filters (only for `master.m3u8`)
+
+        All three filters are optional and can be combined freely.
+
+        | Parameter | Effect |
+        |---|---|
+        | `codec=h264` | Keep only renditions for the given codec (`h264`, `h265`, `av1`). Falls back to full playlist if no match. |
+        | `audio=<index>` | Keep only the `EXT-X-MEDIA:TYPE=AUDIO` entry whose URI contains `audio/<index>/`. Promotes it to `DEFAULT=YES`. |
+        | `subs=<index>` | Keep only the `EXT-X-MEDIA:TYPE=SUBTITLES` entry whose URI contains `subs/<index>/`. |
+
+        Use `index` values from `audio_tracks[].index` / `subtitle_tracks[].index` returned by `GET /videos/{id}`.
       parameters:
         - name: videoID
           in: path
@@ -736,7 +912,27 @@ paths:
           schema:
             type: string
             enum: [h264, h265, av1]
-          description: Filter master playlist to a single codec (only for `master.m3u8`)
+          description: Filter master playlist to a single codec. Only applied to `master.m3u8`.
+        - name: audio
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+          description: |
+            Keep only the audio rendition at this index. Corresponds to `audio_tracks[].index`
+            from `GET /videos/{id}`. Only applied to `master.m3u8`.
+          example: 3
+        - name: subs
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+          description: |
+            Keep only the subtitle rendition at this index. Corresponds to `subtitle_tracks[].index`
+            from `GET /videos/{id}`. Only applied to `master.m3u8`.
+          example: 1
       responses:
         '200':
           description: HLS manifest

@@ -80,6 +80,17 @@ func (m *memVideos) SetSegments(_ context.Context, id string, segments []byte) e
 	return nil
 }
 
+func (m *memVideos) FindByIDs(_ context.Context, ids []string) (map[string]*model.Video, error) {
+	result := make(map[string]*model.Video, len(ids))
+	for _, id := range ids {
+		if v, ok := m.byID[id]; ok {
+			cp := *v
+			result[id] = &cp
+		}
+	}
+	return result, nil
+}
+
 func (m *memVideos) DeleteByID(_ context.Context, id string) error {
 	delete(m.byID, id)
 	return nil

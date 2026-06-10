@@ -55,6 +55,35 @@ func (r *VideoRepo) FindByID(ctx context.Context, id string) (*model.Video, erro
 	return v, nil
 }
 
+func (r *VideoRepo) FindByIDs(ctx context.Context, ids []string) (map[string]*model.Video, error) {
+	if len(ids) == 0 {
+		return map[string]*model.Video{}, nil
+	}
+	q := `SELECT id, status, progress, original_path,
+	             duration, width, height, size_bytes, error_message,
+	             segments, audio_tracks, subtitle_tracks, created_at, updated_at
+	      FROM videos WHERE id = ANY($1)`
+	rows, err := r.db.Query(ctx, q, ids)
+	if err != nil {
+		return nil, fmt.Errorf("find videos by ids: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]*model.Video, len(ids))
+	for rows.Next() {
+		v := &model.Video{}
+		if err := rows.Scan(
+			&v.ID, &v.Status, &v.Progress, &v.OriginalPath,
+			&v.Duration, &v.Width, &v.Height, &v.SizeBytes, &v.ErrorMessage,
+			&v.Segments, &v.AudioTracksRaw, &v.SubtitleTracksRaw, &v.CreatedAt, &v.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan video row: %w", err)
+		}
+		result[v.ID] = v
+	}
+	return result, rows.Err()
+}
+
 func (r *VideoRepo) DeleteByID(ctx context.Context, id string) error {
 	q := `DELETE FROM videos WHERE id = $1`
 	tag, err := r.db.Exec(ctx, q, id)

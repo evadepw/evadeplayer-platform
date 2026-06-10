@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -93,6 +94,31 @@ func (h *VideoHandler) GetSegments(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
+}
+
+func (h *VideoHandler) GetTokens(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(body.IDs) == 0 {
+		writeError(w, http.StatusBadRequest, "ids must not be empty")
+		return
+	}
+	if len(body.IDs) > 100 {
+		writeError(w, http.StatusBadRequest, "ids must contain at most 100 entries")
+		return
+	}
+
+	tokens, err := h.svc.GetTokens(r.Context(), body.IDs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tokens": tokens})
 }
 
 func (h *VideoHandler) GetStatus(w http.ResponseWriter, r *http.Request) {

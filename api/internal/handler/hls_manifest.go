@@ -54,8 +54,17 @@ func (h *HLSManifestHandler) ServeManifest(w http.ResponseWriter, r *http.Reques
 	}
 
 	raw := body
-	if codec := r.URL.Query().Get("codec"); codec != "" && strings.HasSuffix(rest, "master.m3u8") {
-		raw = filterMasterByCodec(body, codec)
+	if strings.HasSuffix(rest, "master.m3u8") {
+		q := r.URL.Query()
+		codec := q.Get("codec")
+		audio := q.Get("audio")
+		subs := q.Get("subs")
+		if codec != "" {
+			raw = filterMasterByCodec(raw, codec)
+		}
+		if audio != "" || subs != "" {
+			raw = filterMasterByTracks(raw, audio, subs)
+		}
 	}
 
 	var tokenQuery string
@@ -170,6 +179,58 @@ func filterMasterByCodec(content, codec string) string {
 		return content
 	}
 	return result
+}
+
+// filterMasterByTracks keeps only the #EXT-X-MEDIA entries for the requested
+// audio index and/or subtitle index. Unspecified types (empty string) are kept
+// as-is. The selected audio track is forced to DEFAULT=YES.
+func filterMasterByTracks(content, audioIdx, subsIdx string) string {
+	lines := strings.Split(content, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#EXT-X-MEDIA:TYPE=AUDIO,") {
+			if audioIdx == "" || containsURISegment(trimmed, "audio/"+audioIdx+"/") {
+				if audioIdx != "" {
+					line = forceDefault(trimmed)
+				}
+				out = append(out, line)
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#EXT-X-MEDIA:TYPE=SUBTITLES,") {
+			if subsIdx == "" || containsURISegment(trimmed, "subs/"+subsIdx+"/") {
+				out = append(out, line)
+			}
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
+// containsURISegment checks whether the URI="..." attribute of an HLS tag
+// contains the given path segment.
+func containsURISegment(line, segment string) bool {
+	const uriPrefix = `URI="`
+	start := strings.Index(line, uriPrefix)
+	if start < 0 {
+		return false
+	}
+	start += len(uriPrefix)
+	end := strings.Index(line[start:], `"`)
+	if end < 0 {
+		return false
+	}
+	return strings.Contains(line[start:start+end], segment)
+}
+
+// forceDefault rewrites DEFAULT=NO to DEFAULT=YES in a tag line.
+func forceDefault(line string) string {
+	if strings.Contains(line, "DEFAULT=NO") {
+		return strings.Replace(line, "DEFAULT=NO", "DEFAULT=YES", 1)
+	}
+	return line
 }
 
 // rewriteTagURIAttr rewrites the URI="..." attribute inside an HLS tag line,

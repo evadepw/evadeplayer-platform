@@ -97,6 +97,7 @@ func main() {
 	mux.Handle("POST /videos/upload", uploadMW(http.HandlerFunc(uploadH.Upload)))
 	mux.Handle("DELETE /videos/{id}", uploadMW(http.HandlerFunc(uploadH.DeleteVideo)))
 	mux.Handle("GET /videos/{id}/download", uploadMW(http.HandlerFunc(uploadH.DownloadOriginal)))
+	mux.Handle("POST /videos/tokens", readMW(http.HandlerFunc(videoH.GetTokens)))
 	mux.Handle("GET /videos", readMW(http.HandlerFunc(videoH.ListVideos)))
 	mux.Handle("GET /videos/{id}", readMW(http.HandlerFunc(videoH.GetVideo)))
 	mux.Handle("GET /videos/{id}/status", readMW(http.HandlerFunc(videoH.GetStatus)))

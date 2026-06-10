@@ -1,6 +1,7 @@
 package ffmpeg
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -438,16 +439,19 @@ func ExtractSubtitles(ctx context.Context, inputPath, outputDir string, streams 
 // Optional codecs (H.265, AV1) are skipped on encoding failure; H.264 failure is fatal.
 // When separateAudio is true, audio is stripped from video segments because separate
 // audio renditions will be muxed in by the master manifest.
+// onProgress is called with a fraction 0..1 as encoding proceeds; may be nil.
 func TranscodeHLS(
 	ctx context.Context,
 	inputPath, outputDir string,
 	videoWidth, videoHeight, hlsSegmentSeconds int,
 	frameRate float64,
+	duration float64,
 	accel string,
 	codecNames []string,
 	qualities []Quality,
 	separateAudio bool,
 	cfg EncodingConfig,
+	onProgress func(float64),
 ) ([]Variant, error) {
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create output dir: %w", err)
@@ -479,13 +483,36 @@ func TranscodeHLS(
 		err      error
 	}
 	results := make(chan codecResult, len(codecs))
+
+	// Per-codec progress tracking: report the average across all running codecs.
+	var progressMu sync.Mutex
+	codecProgress := make(map[string]float64, len(codecs))
+	for ci := range codecs {
+		codecProgress[codecs[ci].Name] = 0
+	}
+	reportProgress := func(name string, f float64) {
+		if onProgress == nil {
+			return
+		}
+		progressMu.Lock()
+		codecProgress[name] = f
+		total := 0.0
+		for _, v := range codecProgress {
+			total += v
+		}
+		avg := total / float64(len(codecProgress))
+		progressMu.Unlock()
+		onProgress(avg)
+	}
+
 	var wg sync.WaitGroup
 	for ci := range codecs {
 		c := &codecs[ci]
 		wg.Add(1)
 		go func(c *Codec) {
 			defer wg.Done()
-			v, err := transcodeCodec(ctx, inputPath, outputDir, c, qualities, videoHeight, hlsSegmentSeconds, frameRate, separateAudio, cfg)
+			cb := func(f float64) { reportProgress(c.Name, f) }
+			v, err := transcodeCodec(ctx, inputPath, outputDir, c, qualities, videoHeight, hlsSegmentSeconds, frameRate, duration, separateAudio, cfg, cb)
 			results <- codecResult{codec: c, variants: v, err: err}
 		}(c)
 	}
@@ -512,9 +539,10 @@ func transcodeCodec(
 	c *Codec,
 	qualities []Quality,
 	videoHeight, hlsSegmentSeconds int,
-	frameRate float64,
+	frameRate, duration float64,
 	separateAudio bool,
 	cfg EncodingConfig,
+	onProgress func(float64),
 ) ([]Variant, error) {
 	if !encoderAvailable(ctx, c.VideoEnc) {
 		return nil, fmt.Errorf("ffmpeg encoder %q is not available in this container", c.VideoEnc)
@@ -640,10 +668,46 @@ func transcodeCodec(
 
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	cmd.Stdout = os.Stdout
-	var stderr bytes.Buffer
-	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("ffmpeg: %w: %s", err, lastLines(stderr.String(), 8))
+
+	var stderrBuf bytes.Buffer
+	var runErr error
+
+	if onProgress != nil && duration > 0 {
+		pr, pw := io.Pipe()
+		cmd.Stderr = io.MultiWriter(&stderrBuf, os.Stderr, pw)
+
+		if err := cmd.Start(); err != nil {
+			pw.Close()
+			pr.Close()
+			return nil, fmt.Errorf("ffmpeg start: %w", err)
+		}
+
+		var parseWg sync.WaitGroup
+		parseWg.Add(1)
+		go func() {
+			defer parseWg.Done()
+			scanner := bufio.NewScanner(pr)
+			for scanner.Scan() {
+				if t := parseFFmpegTime(scanner.Text()); t >= 0 {
+					f := t / duration
+					if f > 1 {
+						f = 1
+					}
+					onProgress(f)
+				}
+			}
+		}()
+
+		runErr = cmd.Wait()
+		pw.Close()
+		parseWg.Wait()
+	} else {
+		cmd.Stderr = io.MultiWriter(&stderrBuf, os.Stderr)
+		runErr = cmd.Run()
+	}
+
+	if runErr != nil {
+		return nil, fmt.Errorf("ffmpeg: %w: %s", runErr, lastLines(stderrBuf.String(), 8))
 	}
 
 	var variants []Variant
@@ -651,6 +715,34 @@ func transcodeCodec(
 		variants = append(variants, Variant{Codec: c, Quality: &applicable[i]})
 	}
 	return variants, nil
+}
+
+// parseFFmpegTime extracts the current encoding position (seconds) from an ffmpeg
+// progress line containing "time=HH:MM:SS.ss". Returns -1 if not found or N/A.
+func parseFFmpegTime(line string) float64 {
+	const prefix = "time="
+	idx := strings.Index(line, prefix)
+	if idx < 0 {
+		return -1
+	}
+	s := line[idx+len(prefix):]
+	if strings.HasPrefix(s, "N/A") {
+		return -1
+	}
+	if i := strings.IndexAny(s, " \t\r\n"); i > 0 {
+		s = s[:i]
+	}
+	parts := strings.SplitN(s, ":", 3)
+	if len(parts) != 3 {
+		return -1
+	}
+	h, err1 := strconv.ParseFloat(parts[0], 64)
+	m, err2 := strconv.ParseFloat(parts[1], 64)
+	sec, err3 := strconv.ParseFloat(parts[2], 64)
+	if err1 != nil || err2 != nil || err3 != nil {
+		return -1
+	}
+	return h*3600 + m*60 + sec
 }
 
 // dynamicEncoderArgs returns encoder-specific args derived from EncodingConfig:

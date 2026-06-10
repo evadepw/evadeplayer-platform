@@ -66,6 +66,39 @@ type VideoResponse struct {
 	SubtitleTracks []SubtitleTrackResponse `json:"subtitle_tracks,omitempty"`
 }
 
+type TokenResponse struct {
+	Token       string `json:"token"`
+	Expires     int64  `json:"expires"`
+	ManifestURL string `json:"manifest_url"`
+}
+
+// GetTokens returns a token for each requested ID. Videos that are not found
+// or not yet ready have a nil entry in the result map.
+func (s *VideoService) GetTokens(ctx context.Context, ids []string) (map[string]*TokenResponse, error) {
+	videos, err := s.videoRepo.FindByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	expires := time.Now().Add(hlsTokenTTL).Unix()
+	expiresStr := strconv.FormatInt(expires, 10)
+
+	result := make(map[string]*TokenResponse, len(ids))
+	for _, id := range ids {
+		v, ok := videos[id]
+		if !ok || v.Status != model.StatusReady {
+			result[id] = nil
+			continue
+		}
+		token := ComputeHLSToken(s.hlsTokenSecret, id, expiresStr)
+		result[id] = &TokenResponse{
+			Token:       token,
+			Expires:     expires,
+			ManifestURL: fmt.Sprintf("%s/hls-proxy/%s/master.m3u8?token=%s&expires=%s", s.publicBaseURL, id, token, expiresStr),
+		}
+	}
+	return result, nil
+}
+
 func (s *VideoService) GetVideo(ctx context.Context, id string) (*VideoResponse, error) {
 	v, err := s.videoRepo.FindByID(ctx, id)
 	if err != nil {

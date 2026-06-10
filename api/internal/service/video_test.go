@@ -169,6 +169,17 @@ func (f *fakeVideoStore) SetSegments(_ context.Context, id string, segments []by
 	return nil
 }
 
+func (f *fakeVideoStore) FindByIDs(_ context.Context, ids []string) (map[string]*model.Video, error) {
+	result := make(map[string]*model.Video, len(ids))
+	for _, id := range ids {
+		if f.video != nil && f.video.ID == id {
+			cp := *f.video
+			result[id] = &cp
+		}
+	}
+	return result, nil
+}
+
 func (f *fakeVideoStore) DeleteByID(_ context.Context, id string) error {
 	if f.video != nil && f.video.ID == id {
 		f.video = nil
