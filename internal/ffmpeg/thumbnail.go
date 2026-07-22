@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 )
 
 type ThumbnailConfig struct {
@@ -17,6 +18,7 @@ type ThumbnailConfig struct {
 	PreviewWidth          int
 	PreviewHeight         int
 	ImageStreamBandwidth  int
+	JPEGQuality           int // ffmpeg -qscale:v for preview/sprite JPEGs: 2 (best) … 31 (worst)
 }
 
 func DefaultThumbnailConfig() ThumbnailConfig {
@@ -28,6 +30,7 @@ func DefaultThumbnailConfig() ThumbnailConfig {
 		PreviewWidth:          640,
 		PreviewHeight:         360,
 		ImageStreamBandwidth:  30000,
+		JPEGQuality:           3,
 	}
 }
 
@@ -53,6 +56,9 @@ func (c ThumbnailConfig) WithDefaults() ThumbnailConfig {
 	}
 	if c.ImageStreamBandwidth < 1 {
 		c.ImageStreamBandwidth = def.ImageStreamBandwidth
+	}
+	if c.JPEGQuality < 1 {
+		c.JPEGQuality = def.JPEGQuality
 	}
 	return c
 }
@@ -82,7 +88,7 @@ func GeneratePreviewWithConfig(ctx context.Context, inputPath, outputDir string,
 		"-vf", fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2",
 			cfg.PreviewWidth, cfg.PreviewHeight, cfg.PreviewWidth, cfg.PreviewHeight),
 		"-frames:v", "1",
-		"-qscale:v", "3",
+		"-qscale:v", strconv.Itoa(cfg.JPEGQuality),
 		"-y",
 		previewPath,
 	}
@@ -122,7 +128,7 @@ func GenerateSpriteWithConfig(ctx context.Context, inputPath, outputDir string, 
 	args := []string{
 		"-i", inputPath,
 		"-vf", filter,
-		"-qscale:v", "3",
+		"-qscale:v", strconv.Itoa(cfg.JPEGQuality),
 		"-frames:v", "1",
 		"-y",
 		spritePath,

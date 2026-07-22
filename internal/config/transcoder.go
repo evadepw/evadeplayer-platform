@@ -43,6 +43,7 @@ func LoadTranscoder() (*Transcoder, error) {
 			PreviewWidth:          getEnvPositiveInt("TRANSCODE_PREVIEW_WIDTH", 640),
 			PreviewHeight:         getEnvPositiveInt("TRANSCODE_PREVIEW_HEIGHT", 360),
 			ImageStreamBandwidth:  getEnvPositiveInt("TRANSCODE_IMAGE_STREAM_BANDWIDTH", 30000),
+			JPEGQuality:           getEnvPositiveInt("TRANSCODE_JPEG_QUALITY", 3),
 		},
 		Encoding: ffmpeg.EncodingConfig{
 			CPUPreset:       getEnv("TRANSCODE_PRESET", "slow"),
@@ -53,7 +54,9 @@ func LoadTranscoder() (*Transcoder, error) {
 			H265CRF:         getEnvInt("TRANSCODE_H265_CRF", 0),
 			AudioBitrate:    getEnv("TRANSCODE_AUDIO_BITRATE", "128k"),
 			AudioSampleRate: getEnvPositiveInt("TRANSCODE_AUDIO_SAMPLE_RATE", 48000),
+			AudioChannels:   getEnvPositiveInt("TRANSCODE_AUDIO_CHANNELS", 2),
 			SceneCut:        getEnvBool("TRANSCODE_SCENE_CUT", false),
+			VAAPIDevice:     getEnv("TRANSCODE_VAAPI_DEVICE", "/dev/dri/renderD128"),
 		},
 	}
 

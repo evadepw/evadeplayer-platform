@@ -54,7 +54,9 @@ type EncodingConfig struct {
 	H265CRF         int    // libx265 CRF 0–51; 0=bitrate mode. Typical: 24–28
 	AudioBitrate    string // AAC bitrate for separate audio renditions (e.g. "128k")
 	AudioSampleRate int    // output audio sample rate in Hz
+	AudioChannels   int    // output audio channel count (2 = downmix to stereo)
 	SceneCut        bool   // enable scene-cut keyframe insertion
+	VAAPIDevice     string // DRM render node for VAAPI (default /dev/dri/renderD128)
 }
 
 func DefaultEncodingConfig() EncodingConfig {
@@ -67,7 +69,9 @@ func DefaultEncodingConfig() EncodingConfig {
 		H265CRF:         0,
 		AudioBitrate:    "128k",
 		AudioSampleRate: 48000,
+		AudioChannels:   2,
 		SceneCut:        false,
+		VAAPIDevice:     defaultVAAPIDevice,
 	}
 }
 
@@ -178,7 +182,7 @@ var nvidiaCodecs = []Codec{
 var vaapiCodecs = []Codec{
 	{
 		Name:      "h264",
-		InputArgs: []string{"-vaapi_device", "/dev/dri/renderD128"},
+		InputArgs: []string{"-vaapi_device", defaultVAAPIDevice},
 		VideoEnc:  "h264_vaapi",
 		AudioEnc:  "aac",
 		ExtraArgs: []string{
@@ -192,7 +196,7 @@ var vaapiCodecs = []Codec{
 	},
 	{
 		Name:      "h265",
-		InputArgs: []string{"-vaapi_device", "/dev/dri/renderD128"},
+		InputArgs: []string{"-vaapi_device", defaultVAAPIDevice},
 		VideoEnc:  "hevc_vaapi",
 		AudioEnc:  "aac",
 		ExtraArgs: []string{
@@ -207,7 +211,7 @@ var vaapiCodecs = []Codec{
 	},
 	{
 		Name:           "av1",
-		InputArgs:      []string{"-vaapi_device", "/dev/dri/renderD128"},
+		InputArgs:      []string{"-vaapi_device", defaultVAAPIDevice},
 		VideoEnc:       "av1_vaapi",
 		AudioEnc:       "aac",
 		ScaleFilter:    "format=nv12,hwupload,scale_vaapi=w=-2:h=%d",
@@ -219,12 +223,24 @@ var vaapiCodecs = []Codec{
 	},
 }
 
-func CodecsForAccel(accel string) []Codec {
+const defaultVAAPIDevice = "/dev/dri/renderD128"
+
+// CodecsForAccel returns the codec set for a hardware acceleration mode.
+// vaapiDevice overrides the DRM render node for VAAPI; "" keeps the default.
+func CodecsForAccel(accel, vaapiDevice string) []Codec {
 	switch accel {
 	case "nvidia":
 		return nvidiaCodecs
 	case "vaapi":
-		return vaapiCodecs
+		if vaapiDevice == "" || vaapiDevice == defaultVAAPIDevice {
+			return vaapiCodecs
+		}
+		out := make([]Codec, len(vaapiCodecs))
+		copy(out, vaapiCodecs)
+		for i := range out {
+			out[i].InputArgs = []string{"-vaapi_device", vaapiDevice}
+		}
+		return out
 	default:
 		return Codecs
 	}
@@ -354,6 +370,10 @@ func ExtractAudio(ctx context.Context, inputPath, outputDir string, streams []Au
 	if abitrate == "" {
 		abitrate = "128k"
 	}
+	channels := cfg.AudioChannels
+	if channels < 1 {
+		channels = 2
+	}
 	results := make(chan result, len(streams))
 	var wg sync.WaitGroup
 	for _, s := range streams {
@@ -371,7 +391,7 @@ func ExtractAudio(ctx context.Context, inputPath, outputDir string, streams []Au
 				"-map", fmt.Sprintf("0:a:%d", stream.TypeIndex),
 				"-c:a", "aac",
 				"-b:a", abitrate,
-				"-ac", "2",
+				"-ac", strconv.Itoa(channels),
 				"-ar", strconv.Itoa(cfg.AudioSampleRate),
 				"-vn",
 				"-f", "hls",
@@ -479,7 +499,7 @@ func TranscodeHLS(
 		hlsSegmentSeconds = 4
 	}
 
-	codecs, err := filterCodecs(CodecsForAccel(accel), codecNames)
+	codecs, err := filterCodecs(CodecsForAccel(accel, cfg.VAAPIDevice), codecNames)
 	if err != nil {
 		return nil, err
 	}
@@ -667,10 +687,14 @@ func transcodeCodec(
 		)
 
 		if !separateAudio {
+			channels := cfg.AudioChannels
+			if channels < 1 {
+				channels = 2
+			}
 			args = append(args,
 				"-c:a", c.AudioEnc,
 				"-b:a", q.ABitrate,
-				"-ac", "2",
+				"-ac", strconv.Itoa(channels),
 				"-ar", strconv.Itoa(cfg.AudioSampleRate),
 			)
 		}
