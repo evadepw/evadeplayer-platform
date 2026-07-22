@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -17,13 +17,15 @@ import (
 )
 
 func main() {
+	config.SetupLogging()
+
 	cfg, err := config.LoadTranscoder()
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		fatal("load config", err)
 	}
 
 	if err := os.MkdirAll(cfg.TempDir, 0o755); err != nil {
-		log.Fatalf("create temp dir: %v", err)
+		fatal("create temp dir", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -31,14 +33,14 @@ func main() {
 
 	db, err := pgxpool.New(ctx, cfg.DB.DSN())
 	if err != nil {
-		log.Fatalf("connect to postgres: %v", err)
+		fatal("connect to postgres", err)
 	}
 	defer db.Close()
 
 	if err := db.Ping(ctx); err != nil {
-		log.Fatalf("ping postgres: %v", err)
+		fatal("ping postgres", err)
 	}
-	log.Println("connected to postgres")
+	slog.Info("connected to postgres")
 
 	seaweed := storage.NewSeaweedFS(cfg.SeaweedFSFiler)
 	videoRepo := repository.NewVideoRepo(db)
@@ -62,10 +64,15 @@ func main() {
 		quit := make(chan os.Signal, 1)
 		signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 		<-quit
-		log.Println("shutting down transcoder...")
+		slog.Info("shutting down transcoder")
 		runCancel()
 	}()
 
 	w.Run(runCtx)
-	log.Println("transcoder stopped")
+	slog.Info("transcoder stopped")
+}
+
+func fatal(msg string, err error) {
+	slog.Error(msg, "error", err)
+	os.Exit(1)
 }

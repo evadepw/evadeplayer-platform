@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -20,9 +20,11 @@ import (
 )
 
 func main() {
+	config.SetupLogging()
+
 	cfg, err := config.LoadAPI()
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		fatal("load config", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -30,14 +32,14 @@ func main() {
 
 	db, err := pgxpool.New(ctx, cfg.DB.DSN())
 	if err != nil {
-		log.Fatalf("connect to postgres: %v", err)
+		fatal("connect to postgres", err)
 	}
 	defer db.Close()
 
 	if err := db.Ping(ctx); err != nil {
-		log.Fatalf("ping postgres: %v", err)
+		fatal("ping postgres", err)
 	}
-	log.Println("connected to postgres")
+	slog.Info("connected to postgres")
 
 	seaweed := storage.NewSeaweedFS(cfg.SeaweedFSFiler)
 
@@ -54,10 +56,10 @@ func main() {
 	var readMW func(http.Handler) http.Handler
 	if cfg.ReadPublic {
 		readMW = func(h http.Handler) http.Handler { return h }
-		log.Println("read access: public")
+		slog.Info("read access: public")
 	} else {
 		readMW = handler.ServiceKeyMiddleware(cfg.ServiceKey)
-		log.Println("read access: service key required")
+		slog.Info("read access: service key required")
 	}
 
 	mux := http.NewServeMux()
@@ -98,21 +100,26 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("API listening on :%s", cfg.Port)
+		slog.Info("API listening", "port", cfg.Port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("listen: %v", err)
+			fatal("listen", err)
 		}
 	}()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 	<-quit
-	log.Println("shutting down...")
+	slog.Info("shutting down")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("graceful shutdown error: %v", err)
+		slog.Error("graceful shutdown", "error", err)
 	}
-	log.Println("bye")
+	slog.Info("bye")
+}
+
+func fatal(msg string, err error) {
+	slog.Error(msg, "error", err)
+	os.Exit(1)
 }

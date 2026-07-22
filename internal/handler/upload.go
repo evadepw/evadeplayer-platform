@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -34,7 +34,7 @@ func NewUploadHandler(svc *service.UploadService, maxUploadSize int64) *UploadHa
 }
 
 func (h *UploadHandler) Upload(w http.ResponseWriter, r *http.Request) {
-	log.Printf("[upload] request received from %s, Content-Length=%d", r.RemoteAddr, r.ContentLength)
+	slog.Info("upload request received", "remote_addr", r.RemoteAddr, "content_length", r.ContentLength)
 
 	rc := http.NewResponseController(w)
 	_ = rc.SetWriteDeadline(time.Time{})
@@ -50,7 +50,7 @@ func (h *UploadHandler) Upload(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("file too large, max %d GB", h.maxUploadSize>>30))
 			return
 		}
-		log.Printf("[upload] ParseMultipartForm error: %v", err)
+		slog.Warn("upload: parse multipart form", "error", err)
 		writeError(w, http.StatusBadRequest, "failed to parse multipart form")
 		return
 	}
@@ -90,7 +90,7 @@ func (h *UploadHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		segments = []byte(s)
 	}
 
-	log.Printf("[upload] starting storage upload, file size=%d ext=%s", header.Size, ext)
+	slog.Info("upload: storing original", "size_bytes", header.Size, "ext", ext)
 	video, err := h.svc.Upload(r.Context(), &service.UploadInput{
 		FileExt:  ext,
 		Size:     header.Size,
@@ -102,7 +102,7 @@ func (h *UploadHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[upload] done, video id=%s", video.ID)
+	slog.Info("upload accepted", "video_id", video.ID)
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"id":     video.ID,
 		"status": video.Status,

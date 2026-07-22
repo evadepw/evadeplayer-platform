@@ -14,7 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -84,7 +84,7 @@ func New(store Store, seaweed *storage.SeaweedFS, cfg Config) *Worker {
 // Run processes the queue until ctx is cancelled, then waits for in-flight
 // jobs to wind down (each is released back to the queue).
 func (w *Worker) Run(ctx context.Context) {
-	log.Printf("transcoder worker started, concurrency=%d max_attempts=%d", w.cfg.Concurrency, w.cfg.MaxAttempts)
+	slog.Info("transcoder worker started", "concurrency", w.cfg.Concurrency, "max_attempts", w.cfg.MaxAttempts)
 
 	slots := make(chan struct{}, w.cfg.Concurrency)
 	var wg sync.WaitGroup
@@ -106,7 +106,7 @@ func (w *Worker) Run(ctx context.Context) {
 			job, err := w.store.ClaimNextPending(ctx)
 			if err != nil {
 				if !errors.Is(err, repository.ErrNotFound) && ctx.Err() == nil {
-					log.Printf("claim pending video: %v", err)
+					slog.Error("claim pending video", "error", err)
 				}
 				break
 			}
@@ -121,7 +121,7 @@ func (w *Worker) Run(ctx context.Context) {
 
 		select {
 		case <-ctx.Done():
-			log.Printf("shutting down, waiting for in-flight jobs to release...")
+			slog.Info("shutting down, waiting for in-flight jobs to release")
 			wg.Wait()
 			return
 		case <-ticker.C:
@@ -135,14 +135,14 @@ func (w *Worker) reclaim(ctx context.Context) {
 	defer cancel()
 	requeued, failed, err := w.store.ReclaimStale(opCtx, staleAfter, w.cfg.MaxAttempts)
 	if err != nil {
-		log.Printf("reclaim stale videos: %v", err)
+		slog.Error("reclaim stale videos", "error", err)
 		return
 	}
 	for _, id := range requeued {
-		log.Printf("video %s: stale claim requeued", id)
+		slog.Warn("stale claim requeued", "video_id", id)
 	}
 	for _, id := range failed {
-		log.Printf("video %s: stale claim failed permanently (attempt budget exhausted)", id)
+		slog.Warn("stale claim failed permanently, attempt budget exhausted", "video_id", id)
 	}
 }
 
@@ -163,25 +163,25 @@ func (w *Worker) runJob(ctx context.Context, job *repository.Job) {
 	if ctx.Err() != nil {
 		// Shutdown interrupted the job — not the video's fault, give the
 		// attempt back and let another worker pick it up.
-		log.Printf("video %s: interrupted by shutdown, releasing", job.VideoID)
+		slog.Info("job interrupted by shutdown, releasing", "video_id", job.VideoID)
 		if err := w.store.Release(opCtx, job.VideoID); err != nil {
-			log.Printf("video %s: release: %v", job.VideoID, err)
+			slog.Error("release job", "video_id", job.VideoID, "error", err)
 		}
 		return
 	}
 
 	if job.Attempts < w.cfg.MaxAttempts {
-		log.Printf("video %s: attempt %d/%d failed, requeueing: %v", job.VideoID, job.Attempts, w.cfg.MaxAttempts, err)
+		slog.Warn("attempt failed, requeueing", "video_id", job.VideoID, "attempt", job.Attempts, "max_attempts", w.cfg.MaxAttempts, "error", err)
 		if rqErr := w.store.Requeue(opCtx, job.VideoID); rqErr != nil {
-			log.Printf("video %s: requeue: %v", job.VideoID, rqErr)
+			slog.Error("requeue job", "video_id", job.VideoID, "error", rqErr)
 		}
 		return
 	}
 
-	log.Printf("video %s: attempt %d/%d failed permanently: %v", job.VideoID, job.Attempts, w.cfg.MaxAttempts, err)
+	slog.Error("attempt failed permanently", "video_id", job.VideoID, "attempt", job.Attempts, "max_attempts", w.cfg.MaxAttempts, "error", err)
 	errMsg := err.Error()
 	if dbErr := w.store.UpdateStatus(opCtx, job.VideoID, model.StatusFailed, &errMsg); dbErr != nil {
-		log.Printf("video %s: set failed status: %v", job.VideoID, dbErr)
+		slog.Error("set failed status", "video_id", job.VideoID, "error", dbErr)
 	}
 }
 
@@ -195,7 +195,7 @@ func (w *Worker) heartbeatLoop(ctx context.Context, videoID string) {
 		case <-ticker.C:
 			opCtx, cancel := context.WithTimeout(ctx, dbTimeout)
 			if err := w.store.Heartbeat(opCtx, videoID); err != nil {
-				log.Printf("video %s: heartbeat: %v", videoID, err)
+				slog.Error("heartbeat", "video_id", videoID, "error", err)
 			}
 			cancel()
 		}
@@ -204,7 +204,7 @@ func (w *Worker) heartbeatLoop(ctx context.Context, videoID string) {
 
 func (w *Worker) process(ctx context.Context, job *repository.Job) error {
 	videoID := job.VideoID
-	log.Printf("processing video %s (attempt %d/%d)", videoID, job.Attempts, w.cfg.MaxAttempts)
+	slog.Info("processing video", "video_id", videoID, "attempt", job.Attempts, "max_attempts", w.cfg.MaxAttempts)
 
 	workDir := filepath.Join(w.cfg.TempDir, videoID)
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
@@ -212,7 +212,7 @@ func (w *Worker) process(ctx context.Context, job *repository.Job) error {
 	}
 	defer func() {
 		if err := os.RemoveAll(workDir); err != nil {
-			log.Printf("cleanup work dir %s: %v", workDir, err)
+			slog.Error("cleanup work dir", "dir", workDir, "error", err)
 		}
 	}()
 
@@ -226,7 +226,7 @@ func (w *Worker) process(ctx context.Context, job *repository.Job) error {
 	if err != nil {
 		return fmt.Errorf("probe video: %w", err)
 	}
-	log.Printf("video %s: duration=%.1fs %dx%d", videoID, probe.Duration, probe.Width, probe.Height)
+	slog.Info("probed video", "video_id", videoID, "duration_s", probe.Duration, "width", probe.Width, "height", probe.Height)
 
 	if err := w.setMetadata(ctx, videoID, probe.Duration, probe.Width, probe.Height); err != nil {
 		return fmt.Errorf("update metadata: %w", err)
@@ -249,37 +249,37 @@ func (w *Worker) process(ctx context.Context, job *repository.Job) error {
 	if err != nil {
 		return fmt.Errorf("transcode HLS: %w", err)
 	}
-	log.Printf("video %s transcoded: variants=%d", videoID, len(variants))
+	slog.Info("video transcoded", "video_id", videoID, "variants", len(variants))
 	w.setProgress(ctx, videoID, 65)
 
 	extractedAudio, _ := ffmpeg.ExtractAudio(ctx, localOriginal, hlsDir, probe.Audio, w.cfg.HLSSegmentSeconds, w.cfg.Encoding)
-	log.Printf("video %s audio tracks: extracted=%d/%d", videoID, len(extractedAudio), len(probe.Audio))
+	slog.Info("audio tracks extracted", "video_id", videoID, "extracted", len(extractedAudio), "total", len(probe.Audio))
 	w.setProgress(ctx, videoID, 72)
 
 	extractedSubs, _ := ffmpeg.ExtractSubtitles(ctx, localOriginal, hlsDir, probe.Subtitles, probe.Duration)
-	log.Printf("video %s subtitle tracks: extracted=%d/%d", videoID, len(extractedSubs), len(probe.Subtitles))
+	slog.Info("subtitle tracks extracted", "video_id", videoID, "extracted", len(extractedSubs), "total", len(probe.Subtitles))
 	w.setProgress(ctx, videoID, 78)
 
 	if err := w.setTracks(ctx, videoID, extractedAudio, extractedSubs); err != nil {
-		log.Printf("update tracks for %s: %v (non-fatal)", videoID, err)
+		slog.Warn("update tracks failed (non-fatal)", "video_id", videoID, "error", err)
 	}
 
 	thumbDir := filepath.Join(workDir, "thumbnails")
 	previewPath := ""
 	if generated, err := ffmpeg.GeneratePreviewWithConfig(ctx, localOriginal, thumbDir, probe.Duration, w.cfg.Thumbnail); err != nil {
-		log.Printf("preview generation failed for %s: %v (non-fatal)", videoID, err)
+		slog.Warn("preview generation failed (non-fatal)", "video_id", videoID, "error", err)
 	} else {
 		previewPath = generated
 	}
 
 	spritePath, err := ffmpeg.GenerateSpriteWithConfig(ctx, localOriginal, thumbDir, probe.Duration, w.cfg.Thumbnail)
 	if err != nil {
-		log.Printf("sprite generation failed for %s: %v (non-fatal)", videoID, err)
+		slog.Warn("sprite generation failed (non-fatal)", "video_id", videoID, "error", err)
 		spritePath = ""
 	}
 	if spritePath != "" {
 		if err := ffmpeg.WriteImageStreamManifestWithConfig(hlsDir, spritePath, probe.Duration, w.cfg.Thumbnail); err != nil {
-			log.Printf("image stream generation failed for %s: %v (non-fatal)", videoID, err)
+			slog.Warn("image stream generation failed (non-fatal)", "video_id", videoID, "error", err)
 		}
 	}
 	w.setProgress(ctx, videoID, 85)
@@ -296,16 +296,16 @@ func (w *Worker) process(ctx context.Context, job *repository.Job) error {
 	if previewPath != "" {
 		remotePath := fmt.Sprintf("thumbnails/%s/preview.jpg", videoID)
 		if err := w.seaweed.UploadFile(ctx, remotePath, previewPath); err != nil {
-			log.Printf("upload preview for %s: %v (non-fatal)", videoID, err)
+			slog.Warn("upload preview failed (non-fatal)", "video_id", videoID, "error", err)
 		}
 	}
 
 	if spritePath != "" {
 		remotePath := fmt.Sprintf("thumbnails/%s/sprite.jpg", videoID)
 		if err := w.seaweed.UploadFile(ctx, remotePath, spritePath); err != nil {
-			log.Printf("upload sprite for %s: %v (non-fatal)", videoID, err)
+			slog.Warn("upload sprite failed (non-fatal)", "video_id", videoID, "error", err)
 		} else if err := w.setStoryboard(ctx, videoID, probe.Duration); err != nil {
-			log.Printf("set storyboard for %s: %v (non-fatal)", videoID, err)
+			slog.Warn("set storyboard failed (non-fatal)", "video_id", videoID, "error", err)
 		}
 	}
 
@@ -316,7 +316,7 @@ func (w *Worker) process(ctx context.Context, job *repository.Job) error {
 		return fmt.Errorf("set ready status: %w", err)
 	}
 
-	log.Printf("video %s processing complete", videoID)
+	slog.Info("video processing complete", "video_id", videoID)
 	return nil
 }
 
@@ -393,7 +393,7 @@ func (w *Worker) setProgress(ctx context.Context, videoID string, pct int) {
 	opCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dbTimeout)
 	defer cancel()
 	if err := w.store.SetProgress(opCtx, videoID, pct); err != nil {
-		log.Printf("set progress %d%% for %s: %v", pct, videoID, err)
+		slog.Error("set progress", "video_id", videoID, "progress", pct, "error", err)
 	}
 }
 

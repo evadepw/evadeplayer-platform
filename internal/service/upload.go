@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"path/filepath"
 
 	"github.com/google/uuid"
@@ -87,7 +87,7 @@ func (s *UploadService) DeleteVideo(ctx context.Context, id string) error {
 		"thumbnails/" + id,
 	} {
 		if err := s.storage.DeleteDir(ctx, dir); err != nil {
-			log.Printf("[delete] failed to remove %s: %v", dir, err)
+			slog.Warn("delete video: failed to remove storage dir", "dir", dir, "error", err)
 		}
 	}
 	return nil

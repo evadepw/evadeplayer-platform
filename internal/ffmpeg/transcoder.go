@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"math"
 	"os"
 	"os/exec"
@@ -343,7 +343,7 @@ func ExtractAudio(ctx context.Context, inputPath, outputDir string, streams []Au
 			defer wg.Done()
 			dir := filepath.Join(outputDir, "audio", strconv.Itoa(stream.TypeIndex))
 			if err := os.MkdirAll(dir, 0o755); err != nil {
-				log.Printf("skip audio stream %d: mkdir: %v", stream.TypeIndex, err)
+				slog.Warn("skip audio stream: mkdir failed", "stream", stream.TypeIndex, "error", err)
 				results <- result{stream, false}
 				return
 			}
@@ -369,7 +369,7 @@ func ExtractAudio(ctx context.Context, inputPath, outputDir string, streams []Au
 			var stderr bytes.Buffer
 			cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
 			if err := cmd.Run(); err != nil {
-				log.Printf("skip audio stream %d: %v: %s", stream.TypeIndex, err, lastLines(stderr.String(), 4))
+				slog.Warn("skip audio stream: ffmpeg failed", "stream", stream.TypeIndex, "error", err, "stderr", lastLines(stderr.String(), 4))
 				results <- result{stream, false}
 				return
 			}
@@ -395,12 +395,12 @@ func ExtractSubtitles(ctx context.Context, inputPath, outputDir string, streams 
 	var produced []SubtitleStream
 	for _, s := range streams {
 		if !textSubtitleCodecs[s.Codec] {
-			log.Printf("skip subtitle stream %d: codec %q is not text-based", s.TypeIndex, s.Codec)
+			slog.Info("skip subtitle stream: codec is not text-based", "stream", s.TypeIndex, "codec", s.Codec)
 			continue
 		}
 		dir := filepath.Join(outputDir, "subs", strconv.Itoa(s.TypeIndex))
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			log.Printf("skip subtitle stream %d: mkdir: %v", s.TypeIndex, err)
+			slog.Warn("skip subtitle stream: mkdir failed", "stream", s.TypeIndex, "error", err)
 			continue
 		}
 		vttPath := filepath.Join(dir, "sub.vtt")
@@ -415,7 +415,7 @@ func ExtractSubtitles(ctx context.Context, inputPath, outputDir string, streams 
 		var stderr bytes.Buffer
 		cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
 		if err := cmd.Run(); err != nil {
-			log.Printf("skip subtitle stream %d: %v: %s", s.TypeIndex, err, lastLines(stderr.String(), 4))
+			slog.Warn("skip subtitle stream: ffmpeg failed", "stream", s.TypeIndex, "error", err, "stderr", lastLines(stderr.String(), 4))
 			continue
 		}
 		targetDur := int(math.Ceil(duration))
@@ -427,7 +427,7 @@ func ExtractSubtitles(ctx context.Context, inputPath, outputDir string, streams 
 			targetDur, duration,
 		)
 		if err := os.WriteFile(filepath.Join(dir, "index.m3u8"), []byte(playlist), 0o644); err != nil {
-			log.Printf("skip subtitle stream %d: write playlist: %v", s.TypeIndex, err)
+			slog.Warn("skip subtitle stream: write playlist failed", "stream", s.TypeIndex, "error", err)
 			continue
 		}
 		produced = append(produced, s)
@@ -523,7 +523,7 @@ func TranscodeHLS(
 	for r := range results {
 		if r.err != nil {
 			if r.codec.Optional {
-				log.Printf("skip optional codec %s: %v", r.codec.Name, r.err)
+				slog.Warn("skip optional codec", "codec", r.codec.Name, "error", r.err)
 				continue
 			}
 			return nil, fmt.Errorf("codec %s: %w", r.codec.Name, r.err)
