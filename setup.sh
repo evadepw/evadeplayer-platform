@@ -5,6 +5,54 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$ROOT_DIR/.env"
 EXAMPLE_ENV="$ROOT_DIR/.env.example"
 
+usage() {
+  cat <<'USAGE'
+Usage: ./setup.sh [options] [KEY=VALUE ...]
+
+Interactive by default. Options:
+  --mode MODE     all-in-one | api | worker
+  --yes           non-interactive: accept defaults / provided values,
+                  auto-generate missing secrets, build and start
+  --no-start      write .env but do not build/start containers
+  -h, --help      show this help
+
+Any KEY=VALUE argument pre-seeds the corresponding .env variable
+(highest priority), e.g.:
+
+  ./setup.sh --mode worker --yes MAIN_SERVER_IP=203.0.113.7       POSTGRES_PASSWORD=s3cret TRANSCODE_WORKERS=4
+
+Precedence for every value: KEY=VALUE args > existing .env > .env.example
+> built-in default.
+USAGE
+}
+
+NONINTERACTIVE=false
+NO_START=false
+CLI_MODE=""
+declare -A OVERRIDE=()
+
+while (( $# > 0 )); do
+  case "$1" in
+    --mode)      CLI_MODE="${2:-}"; shift 2 ;;
+    --mode=*)    CLI_MODE="${1#--mode=}"; shift ;;
+    --yes|-y)    NONINTERACTIVE=true; shift ;;
+    --no-start)  NO_START=true; shift ;;
+    -h|--help)   usage; exit 0 ;;
+    *=*)         OVERRIDE["${1%%=*}"]="${1#*=}"; shift ;;
+    *)           printf 'Unknown argument: %s
+
+' "$1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+if [[ -n "$CLI_MODE" ]]; then
+  case "$CLI_MODE" in
+    all-in-one|api|worker) ;;
+    *) printf -- '--mode must be all-in-one, api or worker (got %s)
+' "$CLI_MODE" >&2; exit 2 ;;
+  esac
+fi
+
 # ── Colors ─────────────────────────────────────────────────────────────────────
 if [[ -t 2 && "${NO_COLOR:-}" == "" ]]; then
   B='\033[1m' D='\033[2m' N='\033[0m'
@@ -36,6 +84,10 @@ from_example() { _env_get "$EXAMPLE_ENV" "$1"; }
 
 default_for() {
   local key="$1" fallback="${2:-}"
+  if [[ -n "${OVERRIDE[$key]:-}" ]]; then
+    printf '%s' "${OVERRIDE[$key]}"
+    return
+  fi
   local v; v="$(existing "$key")"
   [[ -z "$v" ]] && v="$(from_example "$key")"
   printf '%s' "${v:-$fallback}"
@@ -45,6 +97,10 @@ default_for() {
 ask() {
   local key="$1" label="$2" fallback="${3:-}"
   local def; def="$(default_for "$key" "$fallback")"
+  if [[ "$NONINTERACTIVE" == "true" ]]; then
+    printf '%s' "$def"
+    return
+  fi
   _p "    ${YLW}%-42s${N} [%s]: " "$label" "$def"
   local v; read -r v
   printf '%s' "${v:-$def}"
@@ -55,6 +111,10 @@ ask_secret() {
   local key="$1" label="$2"
   local def; def="$(default_for "$key" "")"
   [[ -z "$def" ]] && def="$(gen_secret)"
+  if [[ "$NONINTERACTIVE" == "true" ]]; then
+    printf '%s' "$def"
+    return
+  fi
   local show="${def:0:6}…"
   _p "    ${YLW}%-42s${N} [%s]: " "$label" "$show"
   local v; read -r v
@@ -64,6 +124,10 @@ ask_secret() {
 ask_bool() {
   local key="$1" label="$2" fallback="${3:-true}"
   local def; def="$(default_for "$key" "$fallback")"
+  if [[ "$NONINTERACTIVE" == "true" ]]; then
+    printf '%s' "$def"
+    return
+  fi
   local yn; [[ "$def" == "true" ]] && yn="y" || yn="n"
   while true; do
     _p "    ${YLW}%-42s${N} (y/n) [%s]: " "$label" "$yn"
@@ -79,6 +143,10 @@ ask_bool() {
 ask_yn() {
   # Writes prompt to stderr, returns 0 (yes) or 1 (no)
   local label="$1" default="${2:-y}"
+  if [[ "$NONINTERACTIVE" == "true" ]]; then
+    [[ "$default" == "y" ]]
+    return
+  fi
   while true; do
     _p "\n  ${YLW}%s${N} (y/n) [%s]: " "$label" "$default"
     local v; read -r v; v="${v:-$default}"
@@ -94,6 +162,10 @@ choose() {
   # Displays a numbered menu (stderr), returns chosen key (stdout).
   # Usage: var="$(choose "Label" "default_key" "key1:Desc" "key2:Desc" ...)"
   local label="$1" default="$2"; shift 2
+  if [[ "$NONINTERACTIVE" == "true" ]]; then
+    printf '%s' "$default"
+    return
+  fi
   local -a keys=() descs=()
   local def_n=1 item
   for item in "$@"; do
@@ -235,8 +307,8 @@ print_accel_status() {
 compose_files_for() {
   local mode="$1" accel="$2"
   local f
-  if [[ "$mode" == "transcoder" ]]; then
-    f="docker-compose.transcoder.yml"
+  if [[ "$mode" == "worker" ]]; then
+    f="docker-compose.worker.yml"
   else
     f="docker-compose.yml"
     [[ -f "$ROOT_DIR/docker-compose.override.yml" ]] && f="$f:docker-compose.override.yml"
@@ -257,19 +329,24 @@ check_deps
 
 # ══ 1. Deploy mode ════════════════════════════════════════════════════════════
 cur_mode="$(default_for DEPLOY_MODE "all-in-one")"
+[[ -n "$CLI_MODE" ]] && cur_mode="$CLI_MODE"
 
-mode="$(choose "Deploy mode" "$cur_mode" \
-  "all-in-one:API + DB + transcoder all on this server" \
-  "main:API & infra only — transcoder runs on a separate server" \
-  "transcoder:Transcoder only — connects to a remote main server")"
+if [[ -n "$CLI_MODE" ]]; then
+  mode="$CLI_MODE"
+else
+  mode="$(choose "Deploy mode" "$cur_mode" \
+    "all-in-one:API + DB + transcode workers all on this server" \
+    "api:API & infra only — workers run on separate servers" \
+    "worker:Transcode workers only — connect to a remote API server")"
+fi
 
-# ══ 2. Remote server addresses (transcoder mode) ══════════════════════════════
-if [[ "$mode" == "transcoder" ]]; then
-  section "Remote main server"
-  info "Enter the connection details for the server running Postgres, Redis and SeaweedFS."
+# ══ 2. Remote server addresses (worker mode) ══════════════════════════════════
+if [[ "$mode" == "worker" ]]; then
+  section "Remote API server"
+  info "Enter the connection details for the server running Postgres and SeaweedFS."
   echo
 
-  main_ip="$(ask MAIN_SERVER_IP "Main server IP / hostname" "192.168.1.100")"
+  main_ip="$(ask MAIN_SERVER_IP "API server IP / hostname" "192.168.1.100")"
 
   section "Database"
   pg_user="$(ask POSTGRES_USER     "Postgres user"     "evadeplayer")"
@@ -278,24 +355,24 @@ if [[ "$mode" == "transcoder" ]]; then
   pg_port="$(ask DB_PORT           "Postgres port"     "5432")"
 
   section "Infrastructure ports"
-  info "Ports as configured on the main server (see its .env)."
+  info "Ports as configured on the API server (see its .env)."
   echo
-  redis_port="$(ask       REDIS_PORT            "Redis port"            "6379")"
-  swfs_master_port="$(ask SEAWEEDFS_MASTER_PORT "SeaweedFS master port" "9333")"
   swfs_volume_port="$(ask SEAWEEDFS_VOLUME_PORT "SeaweedFS volume port" "8080")"
   swfs_filer_port="$(ask  SEAWEEDFS_FILER_PORT  "SeaweedFS filer port"  "8888")"
   echo
-  info "The SeaweedFS volume port must also be open on the main server — the filer"
+  info "The SeaweedFS volume port must also be open on the API server — the filer"
   info "redirects file data requests there directly."
 
-  # Compute connection strings
-  redis_addr="${main_ip}:${redis_port}"
-  swfs_master="http://${main_ip}:${swfs_master_port}"
   swfs_filer="http://${main_ip}:${swfs_filer_port}"
+
+  if [[ -z "$pg_pass" ]]; then
+    printf "\n${RED}${B}  POSTGRES_PASSWORD is required for worker mode (pass it as an argument or enter it when prompted).${N}\n\n"
+    exit 1
+  fi
 fi
 
-# ══ 3. Database (all-in-one / main) ═══════════════════════════════════════════
-if [[ "$mode" != "transcoder" ]]; then
+# ══ 3. Database (all-in-one / api) ════════════════════════════════════════════
+if [[ "$mode" != "worker" ]]; then
   section "Database"
 
   pg_user="$(ask        POSTGRES_USER     "Postgres user"     "evadeplayer")"
@@ -306,26 +383,26 @@ if [[ "$mode" != "transcoder" ]]; then
   section "Infrastructure ports"
   info "Host-mapped ports — change if defaults conflict with existing services on this machine."
   echo
-  redis_port="$(ask       REDIS_PORT            "Redis port"            "6379")"
-  swfs_master_port="$(ask SEAWEEDFS_MASTER_PORT "SeaweedFS master port" "9333")"
   swfs_volume_port="$(ask SEAWEEDFS_VOLUME_PORT "SeaweedFS volume port" "8080")"
   swfs_filer_port="$(ask  SEAWEEDFS_FILER_PORT  "SeaweedFS filer port"  "8888")"
   nginx_port="$(ask       NGINX_PORT            "nginx HTTP port"       "80")"
 
-  # Container-internal addresses — containers always talk over the Docker network
-  redis_addr="redis:6379"
-  swfs_master="http://seaweedfs-master:9333"
+  # Container-internal address — containers always talk over the Docker network
   swfs_filer="http://seaweedfs-filer:8888"
 
-  # SeaweedFS volume publicUrl
-  # The transcoder accesses files via the filer (not the volume directly), so the
-  # volume only needs to be reachable within the Docker network.
-  # Internal hostname is always "seaweedfs-volume" and internal port is always 8080.
-  swfs_volume_publicurl="seaweedfs-volume:8080"
+  if [[ "$mode" == "api" ]]; then
+    # Remote workers fetch file data through the filer, which may redirect them
+    # to the volume server — so the volume must advertise an address reachable
+    # from the worker machines.
+    swfs_volume_publicurl="$(ask SEAWEEDFS_VOLUME_PUBLICURL "SeaweedFS volume public address (host:port reachable by workers)" "seaweedfs-volume:8080")"
+  else
+    # all-in-one: workers run inside the same Docker network.
+    swfs_volume_publicurl="seaweedfs-volume:8080"
+  fi
 fi
 
-# ══ 4. API & Security (all-in-one / main) ════════════════════════════════════
-if [[ "$mode" != "transcoder" ]]; then
+# ══ 4. API & Security (all-in-one / api) ═════════════════════════════════════
+if [[ "$mode" != "worker" ]]; then
   section "API"
 
   api_port="$(ask         API_PORT           "Port exposed on host"           "8000")"
@@ -349,12 +426,13 @@ if [[ "$mode" != "transcoder" ]]; then
   [[ "$hls_require_token" == "true" ]] && hls_secret_line="HLS_TOKEN_SECRET=$hls_secret"
 fi
 
-# ══ 5–7. Transcoder, GPU & Encoding quality (not needed in main mode) ════════
-if [[ "$mode" != "main" ]]; then
+# ══ 5–7. Transcoder, GPU & Encoding quality (not needed in api mode) ═════════
+if [[ "$mode" != "api" ]]; then
 
 section "Transcoder"
 
-workers="$(ask   TRANSCODE_WORKERS             "Worker processes"            "2")"
+workers="$(ask       TRANSCODE_WORKERS         "Concurrent transcodes on this machine" "2")"
+max_attempts="$(ask  TRANSCODE_MAX_ATTEMPTS    "Max attempts per video"      "3")"
 segment_s="$(ask TRANSCODE_HLS_SEGMENT_SECONDS "HLS segment duration (s)"   "4")"
 temp_dir="$(ask  TRANSCODE_TEMP_DIR            "Temp dir (inside container)" "/tmp/evadeplayer")"
 codecs="$(ask    TRANSCODE_CODECS              "Codecs (comma-separated)"    "h264,h265,av1")"
@@ -509,10 +587,10 @@ if ask_yn "Configure encoding quality settings" "n"; then
 fi
 
 else
-  # main mode: transcoder runs on a separate server — skip all local transcoder config
+  # api mode: workers run on separate servers — skip all local transcoder config
   accel="cpu"
   compose_file="$(compose_files_for "$mode" "$accel")"
-fi  # mode != main
+fi  # mode != api
 
 # all-in-one includes the local transcoder via the "transcoder" profile.
 # main mode deliberately excludes it — transcoder runs on a separate server.
@@ -527,12 +605,12 @@ if [[ -f "$ENV_FILE" ]]; then
   ok "Backed up existing .env → .env.bak"
 fi
 
-if [[ "$mode" == "transcoder" ]]; then
+if [[ "$mode" == "worker" ]]; then
   cat >"$ENV_FILE" <<EOF
-DEPLOY_MODE=transcoder
+DEPLOY_MODE=worker
 COMPOSE_FILE=$compose_file
 
-# Remote main server
+# Remote API server
 MAIN_SERVER_IP=$main_ip
 
 # PostgreSQL
@@ -543,21 +621,16 @@ DB_HOST=$main_ip
 DB_PORT=$pg_port
 DB_SSLMODE=disable
 
-# Infrastructure ports (as configured on the main server)
-REDIS_PORT=$redis_port
-SEAWEEDFS_MASTER_PORT=$swfs_master_port
+# Infrastructure ports (as configured on the API server)
 SEAWEEDFS_VOLUME_PORT=$swfs_volume_port
 SEAWEEDFS_FILER_PORT=$swfs_filer_port
 
 # Connection strings (computed from IP + ports above)
-REDIS_ADDR=$redis_addr
-REDIS_QUEUE_KEY=transcoding_queue
-
-SEAWEEDFS_MASTER=$swfs_master
 SEAWEEDFS_FILER=$swfs_filer
 
 # Transcoder
 TRANSCODE_WORKERS=$workers
+TRANSCODE_MAX_ATTEMPTS=$max_attempts
 TRANSCODE_TEMP_DIR=$temp_dir
 TRANSCODE_HLS_SEGMENT_SECONDS=$segment_s
 TRANSCODE_ACCEL=$accel
@@ -592,13 +665,13 @@ TRANSCODE_SCENE_CUT=$scene_cut
 
 COMPOSE_PROFILES=
 EOF
-elif [[ "$mode" == "main" ]]; then
-  # main mode: API + infra only, transcoder is on a remote server
+elif [[ "$mode" == "api" ]]; then
+  # api mode: API + infra only, workers run on remote servers
   cat >"$ENV_FILE" <<EOF
-DEPLOY_MODE=main
+DEPLOY_MODE=api
 COMPOSE_FILE=$compose_file
 
-# PostgreSQL
+# PostgreSQL (port is exposed on the host — remote workers connect to it)
 POSTGRES_USER=$pg_user
 POSTGRES_PASSWORD=$pg_pass
 POSTGRES_DB=$pg_db
@@ -606,22 +679,15 @@ DB_HOST=postgres
 DB_PORT=$pg_port
 DB_SSLMODE=disable
 
-# Redis
-REDIS_ADDR=$redis_addr
-REDIS_QUEUE_KEY=transcoding_queue
-
 # SeaweedFS
-SEAWEEDFS_MASTER=$swfs_master
 SEAWEEDFS_FILER=$swfs_filer
 
 # Infrastructure host ports (what is exposed on the host OS — change if defaults conflict)
 NGINX_PORT=$nginx_port
-REDIS_PORT=$redis_port
-SEAWEEDFS_MASTER_PORT=$swfs_master_port
 SEAWEEDFS_VOLUME_PORT=$swfs_volume_port
 SEAWEEDFS_FILER_PORT=$swfs_filer_port
-# SeaweedFS volume public address — remote transcoder contacts this directly for file data
-# Must be reachable from the transcoder server: <this-server-external-ip>:<SEAWEEDFS_VOLUME_PORT>
+# SeaweedFS volume public address — remote workers contact this directly for file data
+# Must be reachable from the worker servers: <this-server-external-ip>:<SEAWEEDFS_VOLUME_PORT>
 SEAWEEDFS_VOLUME_PUBLICURL=$swfs_volume_publicurl
 
 # Auth
@@ -661,21 +727,14 @@ DB_HOST=postgres
 DB_PORT=$pg_port
 DB_SSLMODE=disable
 
-# Redis
-REDIS_ADDR=$redis_addr
-REDIS_QUEUE_KEY=transcoding_queue
-
 # SeaweedFS
-SEAWEEDFS_MASTER=$swfs_master
 SEAWEEDFS_FILER=$swfs_filer
 
 # Infrastructure host ports (what is exposed on the host OS — change if defaults conflict)
 NGINX_PORT=$nginx_port
-REDIS_PORT=$redis_port
-SEAWEEDFS_MASTER_PORT=$swfs_master_port
 SEAWEEDFS_VOLUME_PORT=$swfs_volume_port
 SEAWEEDFS_FILER_PORT=$swfs_filer_port
-# all-in-one: transcoder is inside Docker and uses the internal hostname directly
+# all-in-one: the transcoder is inside Docker and uses the internal hostname directly
 SEAWEEDFS_VOLUME_PUBLICURL=$swfs_volume_publicurl
 
 # Auth
@@ -701,6 +760,7 @@ PUBLIC_HLS_URL=$public_host/hls
 
 # Transcoder
 TRANSCODE_WORKERS=$workers
+TRANSCODE_MAX_ATTEMPTS=$max_attempts
 TRANSCODE_TEMP_DIR=$temp_dir
 TRANSCODE_HLS_SEGMENT_SECONDS=$segment_s
 TRANSCODE_ACCEL=$accel
@@ -744,14 +804,14 @@ section "Summary"
 sep
 printf "  Mode      : ${B}%s${N}\n" "$mode"
 printf "  Compose   : %s\n"        "$compose_file"
-[[ "$mode" != "main" ]] && printf "  Accel     : ${B}%s${N}\n" "$accel"
-[[ "$mode" == "transcoder" ]] && printf "  Main srv  : %s\n" "$main_ip"
-[[ "$mode" != "transcoder" ]] && printf "  Read public: ${B}%s${N}\n" "$read_public"
-[[ "$mode" != "transcoder" ]] && printf "  HLS tokens : ${B}%s${N}\n" "$hls_require_token"
-[[ "$mode" != "transcoder" ]] && printf "  nginx port: ${B}%s${N}\n" "$nginx_port"
+[[ "$mode" != "api" ]] && printf "  Accel     : ${B}%s${N}\n" "$accel"
+[[ "$mode" == "worker" ]] && printf "  API srv   : %s\n" "$main_ip"
+[[ "$mode" != "worker" ]] && printf "  Read public: ${B}%s${N}\n" "$read_public"
+[[ "$mode" != "worker" ]] && printf "  HLS tokens : ${B}%s${N}\n" "$hls_require_token"
+[[ "$mode" != "worker" ]] && printf "  nginx port: ${B}%s${N}\n" "$nginx_port"
 sep
 
-if [[ "$mode" != "main" ]]; then
+if [[ "$mode" != "api" ]]; then
   case "$accel" in
     nvidia) warn "NVIDIA mode: ensure NVIDIA Container Toolkit is installed and the Docker NVIDIA runtime is configured." ;;
     vaapi)  warn "VAAPI mode: ensure /dev/dri/renderD128 is accessible by the Docker daemon." ;;
@@ -760,10 +820,28 @@ fi
 
 section "Build & start"
 
+print_server_urls() {
+  sep
+  printf "  ${B}%-14s${N} %s\n"  "Service URL:"  "$public_host"
+  printf "  ${D}%-14s${N} %s\n"  "nginx direct:" "http://localhost:$nginx_port"
+  printf "  ${D}%-14s${N} %s\n"  "API direct:"   "http://localhost:$api_port"
+  printf "  ${D}%-14s${N} %s\n"  "Logs:"         "make logs"
+  printf "  ${D}%-14s${N} %s\n"  "Stop:"         "make down"
+  printf "  ${D}%-14s${N} %s\n"  "Swagger:"      "$public_host/swagger/"
+  sep
+}
+
+start_default="y"
+[[ "$NO_START" == "true" ]] && start_default="n"
+
 case "$mode" in
-  all-in-one)
-    info "Will start: all services (API, DB, SeaweedFS, transcoder, nginx)."
-    if ask_yn "Build images and start now" "y"; then
+  all-in-one|api)
+    if [[ "$mode" == "all-in-one" ]]; then
+      info "Will start: all services (API, DB, SeaweedFS, workers, nginx)."
+    else
+      info "Will start: API, DB, SeaweedFS, nginx — workers run on separate servers."
+    fi
+    if ask_yn "Build images and start now" "$start_default"; then
       echo
       info "Building images — this may take several minutes on first run..."
       (cd "$ROOT_DIR" && make build && make up)
@@ -771,62 +849,37 @@ case "$mode" in
       wait_for_api "$api_port"
       echo
       ok "Deploy complete."
-      sep
-      printf "  ${B}%-14s${N} %s\n"  "Service URL:"  "$public_host"
-      printf "  ${D}%-14s${N} %s\n"  "nginx direct:" "http://localhost:$nginx_port"
-      printf "  ${D}%-14s${N} %s\n"  "API direct:"   "http://localhost:$api_port"
-      printf "  ${D}%-14s${N} %s\n"  "Logs:"         "make logs"
-      printf "  ${D}%-14s${N} %s\n"  "Stop:"         "make down"
-      printf "  ${D}%-14s${N} %s\n"  "Swagger:"      "$public_host/swagger/"
-      sep
+      print_server_urls
+      if [[ "$mode" == "api" ]]; then
+        echo
+        info "To add a worker server:"
+        info "  1. Clone the repo there"
+        info "  2. ./setup.sh --mode worker   (interactive)"
+        info "     or: ./setup.sh --mode worker --yes MAIN_SERVER_IP=<this-server-ip> \\"
+        info "           POSTGRES_PASSWORD=<password from this .env>"
+        info "  Repeat on as many machines as you need — workers coordinate through the database."
+      fi
     else
       printf "\n  Start later:\n    make build && make up\n"
     fi
     ;;
-  main)
-    info "Will start: API, DB, SeaweedFS, nginx — transcoder profile is OFF."
-    if ask_yn "Build images and start now" "y"; then
-      echo
-      info "Building images — this may take several minutes on first run..."
-      (cd "$ROOT_DIR" && make build && make up)
-      echo
-      wait_for_api "$api_port"
-      echo
-      ok "Deploy complete."
-      sep
-      printf "  ${B}%-14s${N} %s\n"  "Service URL:"  "$public_host"
-      printf "  ${D}%-14s${N} %s\n"  "nginx direct:" "http://localhost:$nginx_port"
-      printf "  ${D}%-14s${N} %s\n"  "API direct:"   "http://localhost:$api_port"
-      printf "  ${D}%-14s${N} %s\n"  "Logs:"         "make logs"
-      printf "  ${D}%-14s${N} %s\n"  "Stop:"         "make down"
-      printf "  ${D}%-14s${N} %s\n"  "Swagger:"      "$public_host/swagger/"
-      sep
-      echo
-      info "To set up the transcoder on a remote server:"
-      info "  1. Clone the repo there"
-      info "  2. ./setup.sh  →  choose 'transcoder'  →  enter this server's IP"
-      info "  3. make worker-up"
-    else
-      printf "\n  Start later:\n    make build && make up\n"
-    fi
-    ;;
-  transcoder)
-    local_target="worker-up"
-    [[ "$accel" == "nvidia" ]] && local_target="worker-up-nvidia"
-    [[ "$accel" == "vaapi"  ]] && local_target="worker-up-vaapi"
-    info "Will build and start the transcoder container."
-    if ask_yn "Build and start now" "y"; then
+  worker)
+    worker_target="worker-up"
+    [[ "$accel" == "nvidia" ]] && worker_target="worker-up-nvidia"
+    [[ "$accel" == "vaapi"  ]] && worker_target="worker-up-vaapi"
+    info "Will build and start the transcode worker container."
+    if ask_yn "Build and start now" "$start_default"; then
       echo
       info "Building image..."
-      (cd "$ROOT_DIR" && make worker-rebuild)
+      (cd "$ROOT_DIR" && make "$worker_target" && docker compose -f docker-compose.worker.yml up -d --build)
       echo
-      ok "Transcoder started."
+      ok "Worker started."
       sep
       printf "  ${D}%-14s${N} %s\n"  "Logs:"  "make worker-logs"
       printf "  ${D}%-14s${N} %s\n"  "Stop:"  "make worker-down"
       sep
     else
-      printf "\n  Start later:\n    make %s\n" "$local_target"
+      printf "\n  Start later:\n    make %s\n" "$worker_target"
     fi
     ;;
 esac
