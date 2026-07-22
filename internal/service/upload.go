@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"strings"
+	"path/filepath"
 
 	"github.com/google/uuid"
 
@@ -68,7 +68,7 @@ func (s *UploadService) DownloadOriginal(ctx context.Context, id string) (*Downl
 	if err != nil {
 		return nil, fmt.Errorf("download original: %w", err)
 	}
-	ext := v.OriginalPath[strings.LastIndex(v.OriginalPath, "."):]
+	ext := filepath.Ext(v.OriginalPath)
 	return &DownloadResult{
 		Body:     body,
 		Size:     v.SizeBytes,

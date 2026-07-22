@@ -39,7 +39,17 @@ func (h *UploadHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	rc := http.NewResponseController(w)
 	_ = rc.SetWriteDeadline(time.Time{})
 
+	// Enforce the size limit while the body streams in, not after: a
+	// too-large upload is cut off at the limit instead of being written to
+	// the multipart temp file in full first. The slack covers form overhead.
+	r.Body = http.MaxBytesReader(w, r.Body, h.maxUploadSize+(1<<20))
+
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("file too large, max %d GB", h.maxUploadSize>>30))
+			return
+		}
 		log.Printf("[upload] ParseMultipartForm error: %v", err)
 		writeError(w, http.StatusBadRequest, "failed to parse multipart form")
 		return

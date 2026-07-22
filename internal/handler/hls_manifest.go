@@ -1,16 +1,23 @@
 package handler
 
 import (
+	"context"
 	"crypto/hmac"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/evadepw/evadeplayer-platform/internal/service"
 )
+
+var errUpstreamNotFound = errors.New("manifest not found")
 
 type HLSManifestHandler struct {
 	secret       []byte
@@ -39,6 +46,19 @@ func (h *HLSManifestHandler) ServeManifest(w http.ResponseWriter, r *http.Reques
 	videoID := trimmed[:idx]
 	rest := trimmed[idx+1:] // e.g. "master.m3u8" or "360p/index.m3u8"
 
+	// The proxy serves only HLS playlists that belong to a single video.
+	// Everything else (segments, images, VTT) goes through /hls/ directly,
+	// so any other shape is either a mistake or an attempt to make the API
+	// fetch arbitrary filer paths.
+	if _, err := uuid.Parse(videoID); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid video id")
+		return
+	}
+	if !validManifestPath(rest) {
+		writeError(w, http.StatusBadRequest, "invalid manifest path")
+		return
+	}
+
 	token := r.URL.Query().Get("token")
 	expiresStr := r.URL.Query().Get("expires")
 
@@ -47,8 +67,12 @@ func (h *HLSManifestHandler) ServeManifest(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	body, err := h.fetchFromSeaweedFS(videoID, rest)
+	body, err := h.fetchFromSeaweedFS(r.Context(), videoID, rest)
 	if err != nil {
+		if errors.Is(err, errUpstreamNotFound) {
+			writeError(w, http.StatusNotFound, "manifest not found")
+			return
+		}
 		writeError(w, http.StatusBadGateway, "failed to fetch manifest")
 		return
 	}
@@ -69,7 +93,7 @@ func (h *HLSManifestHandler) ServeManifest(w http.ResponseWriter, r *http.Reques
 
 	var tokenQuery string
 	if token != "" {
-		tokenQuery = fmt.Sprintf("?token=%s&expires=%s", token, expiresStr)
+		tokenQuery = "?token=" + url.QueryEscape(token) + "&expires=" + url.QueryEscape(expiresStr)
 	}
 	rewritten := rewriteManifest(raw, videoID, rest, tokenQuery)
 
@@ -80,13 +104,38 @@ func (h *HLSManifestHandler) ServeManifest(w http.ResponseWriter, r *http.Reques
 	_, _ = io.WriteString(w, rewritten)
 }
 
-func (h *HLSManifestHandler) fetchFromSeaweedFS(videoID, rest string) (string, error) {
-	url := fmt.Sprintf("%s/hls/%s/%s", h.filerURL, videoID, rest)
-	resp, err := h.client.Get(url)
+// validManifestPath reports whether rest is a safe relative playlist path:
+// plain path segments (no traversal, no absolute paths, no escapes) ending in
+// .m3u8.
+func validManifestPath(rest string) bool {
+	if rest == "" || len(rest) > 512 || !strings.HasSuffix(rest, ".m3u8") {
+		return false
+	}
+	for _, seg := range strings.Split(rest, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+		if strings.ContainsAny(seg, "\\?#%") {
+			return false
+		}
+	}
+	return true
+}
+
+func (h *HLSManifestHandler) fetchFromSeaweedFS(ctx context.Context, videoID, rest string) (string, error) {
+	u := fmt.Sprintf("%s/hls/%s/%s", h.filerURL, videoID, rest)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := h.client.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return "", errUpstreamNotFound
+	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("seaweedfs returned %d", resp.StatusCode)
 	}

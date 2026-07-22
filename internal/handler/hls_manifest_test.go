@@ -198,3 +198,33 @@ func TestRewriteManifest_MultiCodecMaster(t *testing.T) {
 		}
 	}
 }
+
+func TestValidManifestPath(t *testing.T) {
+	valid := []string{
+		"master.m3u8",
+		"h264/720p/index.m3u8",
+		"audio/0/index.m3u8",
+	}
+	for _, p := range valid {
+		if !validManifestPath(p) {
+			t.Errorf("validManifestPath(%q) = false, want true", p)
+		}
+	}
+	invalid := []string{
+		"",
+		"master.m3u8/",
+		"../other-video/master.m3u8",
+		"h264/../../secrets.m3u8",
+		"/etc/passwd",
+		"h264//index.m3u8",
+		"h264/720p/00000.m4s",
+		"a%2e%2e/index.m3u8",
+		"dir\\index.m3u8",
+		"index.m3u8?x=1",
+	}
+	for _, p := range invalid {
+		if validManifestPath(p) {
+			t.Errorf("validManifestPath(%q) = true, want false", p)
+		}
+	}
+}
