@@ -102,4 +102,4 @@ test-verbose:
 
 lint:
 	docker run --rm -v $(shell pwd):/workspace -w /workspace \
-		golangci/golangci-lint:v2.1.6 golangci-lint run
+		golangci/golangci-lint:v2.5.0 golangci-lint run

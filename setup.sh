@@ -348,6 +348,10 @@ if [[ "$mode" == "worker" ]]; then
   info "Enter the connection details for the server running Postgres and SeaweedFS."
   echo
 
+  if [[ "$NONINTERACTIVE" == "true" && -z "$(default_for MAIN_SERVER_IP "")" ]]; then
+    printf "\n${RED}${B}  MAIN_SERVER_IP is required for non-interactive worker setup (pass MAIN_SERVER_IP=<ip>).${N}\n\n"
+    exit 1
+  fi
   main_ip="$(ask MAIN_SERVER_IP "API server IP / hostname" "192.168.1.100")"
 
   section "Database"
