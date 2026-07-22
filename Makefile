@@ -1,13 +1,17 @@
-.PHONY: up up-no-transcoder down restart logs migrate migrate-down build api-build transcoder-build \
-        transcoder-up transcoder-up-nvidia transcoder-up-vaapi transcoder-down transcoder-rebuild transcoder-logs
+.PHONY: up up-no-transcoder down restart build api-build transcoder-build \
+        logs logs-api logs-transcoder ps clean \
+        worker-up worker-up-nvidia worker-up-vaapi worker-down worker-rebuild worker-logs \
+        migrate migrate-down migrate-local \
+        test test-verbose lint
 
-# --- Single-server (все сервисы на одной машине) ---
-# Транскодер запускается только если COMPOSE_PROFILES содержит "transcoder"
-# (setup.sh прописывает это автоматически для режима all-in-one).
+# --- Single server (all services on one machine) ------------------------------
+# The transcoder starts only when COMPOSE_PROFILES contains "transcoder"
+# (setup.sh sets this automatically for all-in-one mode).
+
 up:
 	docker compose up -d
 
-# Ручной запуск без транскодера (переопределяет COMPOSE_PROFILES из .env)
+# Start without the transcoder (overrides COMPOSE_PROFILES from .env)
 up-no-transcoder:
 	COMPOSE_PROFILES=$$(echo "$${COMPOSE_PROFILES}" | tr ',' '\n' | grep -v '^transcoder$$' | paste -sd ',') docker compose up -d
 
@@ -35,32 +39,41 @@ logs-api:
 logs-transcoder:
 	docker compose logs -f transcoder
 
-# --- Отдельный сервак для транскодера ---
-# Перед запуском: cp .env.transcoder.example .env  и прописать адрес основного сервера.
+ps:
+	docker compose ps
 
-transcoder-up:
+clean:
+	docker compose down -v --remove-orphans
+
+# --- Dedicated worker server --------------------------------------------------
+# Run ./setup.sh on the worker machine first (choose "worker") — it writes .env
+# with the main server address and picks the right compose files.
+
+worker-up:
 	@if grep -q '^TRANSCODE_ACCEL=nvidia$$' .env 2>/dev/null; then \
-		docker compose -f docker-compose.transcoder.yml -f docker-compose.nvidia.yml up -d; \
+		docker compose -f docker-compose.worker.yml -f docker-compose.nvidia.yml up -d; \
 	elif grep -q '^TRANSCODE_ACCEL=vaapi$$' .env 2>/dev/null; then \
-		docker compose -f docker-compose.transcoder.yml -f docker-compose.vaapi.yml up -d; \
+		docker compose -f docker-compose.worker.yml -f docker-compose.vaapi.yml up -d; \
 	else \
-		docker compose -f docker-compose.transcoder.yml up -d; \
+		docker compose -f docker-compose.worker.yml up -d; \
 	fi
 
-transcoder-up-nvidia:
-	docker compose -f docker-compose.transcoder.yml -f docker-compose.nvidia.yml up -d
+worker-up-nvidia:
+	docker compose -f docker-compose.worker.yml -f docker-compose.nvidia.yml up -d
 
-transcoder-up-vaapi:
-	docker compose -f docker-compose.transcoder.yml -f docker-compose.vaapi.yml up -d
+worker-up-vaapi:
+	docker compose -f docker-compose.worker.yml -f docker-compose.vaapi.yml up -d
 
-transcoder-down:
-	docker compose -f docker-compose.transcoder.yml down
+worker-down:
+	docker compose -f docker-compose.worker.yml down
 
-transcoder-rebuild:
-	docker compose -f docker-compose.transcoder.yml up -d --build
+worker-rebuild:
+	docker compose -f docker-compose.worker.yml up -d --build
 
-transcoder-logs:
-	docker compose -f docker-compose.transcoder.yml logs -f
+worker-logs:
+	docker compose -f docker-compose.worker.yml logs -f
+
+# --- Database migrations ------------------------------------------------------
 
 migrate:
 	docker compose run --rm migrate
@@ -76,23 +89,17 @@ migrate-local:
 		-database "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@localhost:5432/$(POSTGRES_DB)?sslmode=disable" \
 		up
 
-ps:
-	docker compose ps
+# --- Tests & lint -------------------------------------------------------------
+# Run in a container so a local Go toolchain is not required.
 
-clean:
-	docker compose down -v --remove-orphans
-
-# --- тесты ---
 test:
-	docker run --rm -v $(shell pwd)/api:/workspace -w /workspace \
-		golang:1.22-alpine sh -c "go mod tidy && go test ./..."
-
-test-transcoder:
-	docker run --rm -v $(shell pwd)/transcoder:/workspace -w /workspace \
-		golang:1.22-alpine sh -c "apk add --no-cache ffmpeg && go mod tidy && go test ./..."
-
-test-all: test test-transcoder
+	docker run --rm -v $(shell pwd):/workspace -w /workspace \
+		golang:1.25-alpine go test ./...
 
 test-verbose:
-	docker run --rm -v $(shell pwd)/api:/workspace -w /workspace \
-		golang:1.22-alpine sh -c "go mod tidy && go test -v ./..."
+	docker run --rm -v $(shell pwd):/workspace -w /workspace \
+		golang:1.25-alpine go test -v ./...
+
+lint:
+	docker run --rm -v $(shell pwd):/workspace -w /workspace \
+		golangci/golangci-lint:v2.1.6 golangci-lint run

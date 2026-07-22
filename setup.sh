@@ -805,25 +805,25 @@ case "$mode" in
       info "To set up the transcoder on a remote server:"
       info "  1. Clone the repo there"
       info "  2. ./setup.sh  →  choose 'transcoder'  →  enter this server's IP"
-      info "  3. make transcoder-up"
+      info "  3. make worker-up"
     else
       printf "\n  Start later:\n    make build && make up\n"
     fi
     ;;
   transcoder)
-    local_target="transcoder-up"
-    [[ "$accel" == "nvidia" ]] && local_target="transcoder-up-nvidia"
-    [[ "$accel" == "vaapi"  ]] && local_target="transcoder-up-vaapi"
+    local_target="worker-up"
+    [[ "$accel" == "nvidia" ]] && local_target="worker-up-nvidia"
+    [[ "$accel" == "vaapi"  ]] && local_target="worker-up-vaapi"
     info "Will build and start the transcoder container."
     if ask_yn "Build and start now" "y"; then
       echo
       info "Building image..."
-      (cd "$ROOT_DIR" && make transcoder-rebuild)
+      (cd "$ROOT_DIR" && make worker-rebuild)
       echo
       ok "Transcoder started."
       sep
-      printf "  ${D}%-14s${N} %s\n"  "Logs:"  "make transcoder-logs"
-      printf "  ${D}%-14s${N} %s\n"  "Stop:"  "make transcoder-down"
+      printf "  ${D}%-14s${N} %s\n"  "Logs:"  "make worker-logs"
+      printf "  ${D}%-14s${N} %s\n"  "Stop:"  "make worker-down"
       sep
     else
       printf "\n  Start later:\n    make %s\n" "$local_target"

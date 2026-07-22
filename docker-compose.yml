@@ -82,8 +82,8 @@ services:
 
   api:
     build:
-      context: ./api
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: docker/api.Dockerfile
     restart: unless-stopped
     env_file: .env
     environment:
@@ -108,8 +108,8 @@ services:
   transcoder:
     profiles: [transcoder]
     build:
-      context: ./transcoder
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: docker/transcoder.Dockerfile
     restart: unless-stopped
     env_file: .env
     environment:
@@ -136,7 +136,7 @@ services:
   nginx:
     build:
       context: .
-      dockerfile: nginx/Dockerfile
+      dockerfile: docker/nginx.Dockerfile
     restart: unless-stopped
     env_file: .env
     ports:

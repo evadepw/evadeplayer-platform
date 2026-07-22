@@ -1,7 +1,7 @@
 services:
   transcoder:
     build:
-      dockerfile: Dockerfile.nvidia
+      dockerfile: docker/transcoder.nvidia.Dockerfile
     runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all

@@ -1,7 +1,7 @@
 services:
   transcoder:
     build:
-      dockerfile: Dockerfile.vaapi
+      dockerfile: docker/transcoder.vaapi.Dockerfile
     devices:
       - /dev/dri:/dev/dri
     group_add:

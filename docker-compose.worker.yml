@@ -1,0 +1,18 @@
+# Standalone compose for running transcoder workers on a separate server.
+#
+# On the worker server:
+#   1. Clone the repo
+#   2. ./setup.sh  →  choose "worker"  →  enter the main server address
+#   3. make worker-up        (or: docker compose -f docker-compose.worker.yml up -d)
+#
+# GPU variants:
+#   NVIDIA: docker compose -f docker-compose.worker.yml -f docker-compose.nvidia.yml up -d
+#   VAAPI:  docker compose -f docker-compose.worker.yml -f docker-compose.vaapi.yml  up -d
+
+services:
+  transcoder:
+    build:
+      context: .
+      dockerfile: docker/transcoder.Dockerfile
+    restart: unless-stopped
+    env_file: .env
