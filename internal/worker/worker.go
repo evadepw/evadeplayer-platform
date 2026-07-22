@@ -1,127 +1,212 @@
+// Package worker runs the transcoding loop: claim a pending video from
+// PostgreSQL, download the original from storage, transcode it with ffmpeg,
+// upload the HLS output and record the result.
+//
+// Reliability model: a claim moves the video to 'processing' and spends one
+// attempt. While transcoding, the worker heartbeats the row; if the worker
+// dies, another worker's periodic reclaim pass requeues the video (or fails it
+// once the attempt budget is spent). On graceful shutdown in-flight jobs are
+// released back to 'pending' without spending the attempt.
 package worker
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/redis/go-redis/v9"
-
 	"github.com/evadepw/evadeplayer-platform/internal/ffmpeg"
+	"github.com/evadepw/evadeplayer-platform/internal/model"
+	"github.com/evadepw/evadeplayer-platform/internal/repository"
 	"github.com/evadepw/evadeplayer-platform/internal/storage"
 )
 
-type TranscodeTask struct {
-	VideoID      string `json:"video_id"`
-	OriginalPath string `json:"original_path"`
+const (
+	pollInterval      = 3 * time.Second
+	reclaimInterval   = time.Minute
+	heartbeatInterval = 15 * time.Second
+	// staleAfter must comfortably exceed heartbeatInterval so a slow database
+	// round-trip is never mistaken for a dead worker.
+	staleAfter = 2 * time.Minute
+	// dbTimeout bounds bookkeeping queries (status, progress, heartbeat).
+	dbTimeout = 10 * time.Second
+)
+
+// Store is the queue and result-recording surface the worker needs.
+type Store interface {
+	ClaimNextPending(ctx context.Context) (*repository.Job, error)
+	Heartbeat(ctx context.Context, id string) error
+	Release(ctx context.Context, id string) error
+	Requeue(ctx context.Context, id string) error
+	ReclaimStale(ctx context.Context, staleAfter time.Duration, maxAttempts int) (requeued, failed []string, err error)
+	UpdateStatus(ctx context.Context, id string, status model.VideoStatus, errMsg *string) error
+	SetProgress(ctx context.Context, id string, pct int) error
+	SetMetadata(ctx context.Context, id string, duration float64, width, height int) error
+	SetTracks(ctx context.Context, id string, audio, subtitles []model.Track) error
+	SetStoryboard(ctx context.Context, id string, sb model.Storyboard) error
+}
+
+// Config holds the transcoding parameters for a worker.
+type Config struct {
+	TempDir           string
+	Concurrency       int
+	MaxAttempts       int
+	HLSSegmentSeconds int
+	Accel             string
+	Codecs            []string
+	Qualities         []ffmpeg.Quality
+	Thumbnail         ffmpeg.ThumbnailConfig
+	Encoding          ffmpeg.EncodingConfig
 }
 
 type Worker struct {
-	rdb               *redis.Client
-	queueKey          string
-	db                *pgxpool.Pool
-	seaweed           *storage.SeaweedFS
-	tempDir           string
-	concurrency       int
-	hlsSegmentSeconds int
-	accel             string
-	codecs            []string
-	qualities         []ffmpeg.Quality
-	thumbnailConfig   ffmpeg.ThumbnailConfig
-	encodingConfig    ffmpeg.EncodingConfig
+	store   Store
+	seaweed *storage.SeaweedFS
+	cfg     Config
 }
 
-func New(
-	rdb *redis.Client,
-	queueKey string,
-	db *pgxpool.Pool,
-	seaweed *storage.SeaweedFS,
-	tempDir string,
-	concurrency int,
-	hlsSegmentSeconds int,
-	accel string,
-	codecs []string,
-	qualities []ffmpeg.Quality,
-	thumbnailConfig ffmpeg.ThumbnailConfig,
-	encodingConfig ffmpeg.EncodingConfig,
-) *Worker {
-	return &Worker{
-		rdb:               rdb,
-		queueKey:          queueKey,
-		db:                db,
-		seaweed:           seaweed,
-		tempDir:           tempDir,
-		concurrency:       concurrency,
-		hlsSegmentSeconds: hlsSegmentSeconds,
-		accel:             accel,
-		codecs:            codecs,
-		qualities:         qualities,
-		thumbnailConfig:   thumbnailConfig,
-		encodingConfig:    encodingConfig,
+func New(store Store, seaweed *storage.SeaweedFS, cfg Config) *Worker {
+	if cfg.Concurrency < 1 {
+		cfg.Concurrency = 1
+	}
+	if cfg.MaxAttempts < 1 {
+		cfg.MaxAttempts = 3
+	}
+	return &Worker{store: store, seaweed: seaweed, cfg: cfg}
+}
+
+// Run processes the queue until ctx is cancelled, then waits for in-flight
+// jobs to wind down (each is released back to the queue).
+func (w *Worker) Run(ctx context.Context) {
+	log.Printf("transcoder worker started, concurrency=%d max_attempts=%d", w.cfg.Concurrency, w.cfg.MaxAttempts)
+
+	slots := make(chan struct{}, w.cfg.Concurrency)
+	var wg sync.WaitGroup
+
+	w.reclaim(ctx)
+	lastReclaim := time.Now()
+
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for {
+		if time.Since(lastReclaim) >= reclaimInterval {
+			w.reclaim(ctx)
+			lastReclaim = time.Now()
+		}
+
+		// Fill every free slot with a claimed job, then wait for the next tick.
+		for len(slots) < cap(slots) {
+			job, err := w.store.ClaimNextPending(ctx)
+			if err != nil {
+				if !errors.Is(err, repository.ErrNotFound) && ctx.Err() == nil {
+					log.Printf("claim pending video: %v", err)
+				}
+				break
+			}
+			slots <- struct{}{}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer func() { <-slots }()
+				w.runJob(ctx, job)
+			}()
+		}
+
+		select {
+		case <-ctx.Done():
+			log.Printf("shutting down, waiting for in-flight jobs to release...")
+			wg.Wait()
+			return
+		case <-ticker.C:
+		}
 	}
 }
 
-func (w *Worker) Run(ctx context.Context) {
-	sem := make(chan struct{}, w.concurrency)
-	var wg sync.WaitGroup
+// reclaim requeues stale claims left behind by dead workers.
+func (w *Worker) reclaim(ctx context.Context) {
+	opCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dbTimeout)
+	defer cancel()
+	requeued, failed, err := w.store.ReclaimStale(opCtx, staleAfter, w.cfg.MaxAttempts)
+	if err != nil {
+		log.Printf("reclaim stale videos: %v", err)
+		return
+	}
+	for _, id := range requeued {
+		log.Printf("video %s: stale claim requeued", id)
+	}
+	for _, id := range failed {
+		log.Printf("video %s: stale claim failed permanently (attempt budget exhausted)", id)
+	}
+}
 
-	log.Printf("transcoder worker started, concurrency=%d", w.concurrency)
+// runJob processes one claimed job and records the outcome. Outcome writes use
+// a context that survives cancellation: shutdown must not corrupt bookkeeping.
+func (w *Worker) runJob(ctx context.Context, job *repository.Job) {
+	hbCtx, stopHeartbeat := context.WithCancel(context.WithoutCancel(ctx))
+	go w.heartbeatLoop(hbCtx, job.VideoID)
+	err := w.process(ctx, job)
+	stopHeartbeat()
+	if err == nil {
+		return
+	}
+
+	opCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dbTimeout)
+	defer cancel()
+
+	if ctx.Err() != nil {
+		// Shutdown interrupted the job — not the video's fault, give the
+		// attempt back and let another worker pick it up.
+		log.Printf("video %s: interrupted by shutdown, releasing", job.VideoID)
+		if err := w.store.Release(opCtx, job.VideoID); err != nil {
+			log.Printf("video %s: release: %v", job.VideoID, err)
+		}
+		return
+	}
+
+	if job.Attempts < w.cfg.MaxAttempts {
+		log.Printf("video %s: attempt %d/%d failed, requeueing: %v", job.VideoID, job.Attempts, w.cfg.MaxAttempts, err)
+		if rqErr := w.store.Requeue(opCtx, job.VideoID); rqErr != nil {
+			log.Printf("video %s: requeue: %v", job.VideoID, rqErr)
+		}
+		return
+	}
+
+	log.Printf("video %s: attempt %d/%d failed permanently: %v", job.VideoID, job.Attempts, w.cfg.MaxAttempts, err)
+	errMsg := err.Error()
+	if dbErr := w.store.UpdateStatus(opCtx, job.VideoID, model.StatusFailed, &errMsg); dbErr != nil {
+		log.Printf("video %s: set failed status: %v", job.VideoID, dbErr)
+	}
+}
+
+func (w *Worker) heartbeatLoop(ctx context.Context, videoID string) {
+	ticker := time.NewTicker(heartbeatInterval)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			wg.Wait()
 			return
-		default:
-		}
-
-		result, err := w.rdb.BRPop(ctx, 5*time.Second, w.queueKey).Result()
-		if err != nil {
-			if err == redis.Nil || ctx.Err() != nil {
-				continue
+		case <-ticker.C:
+			opCtx, cancel := context.WithTimeout(ctx, dbTimeout)
+			if err := w.store.Heartbeat(opCtx, videoID); err != nil {
+				log.Printf("video %s: heartbeat: %v", videoID, err)
 			}
-			log.Printf("redis BRPop error: %v", err)
-			time.Sleep(time.Second)
-			continue
+			cancel()
 		}
-
-		var task TranscodeTask
-		if err := json.Unmarshal([]byte(result[1]), &task); err != nil {
-			log.Printf("unmarshal task error: %v", err)
-			continue
-		}
-
-		sem <- struct{}{}
-		wg.Add(1)
-		go func(t TranscodeTask) {
-			defer wg.Done()
-			defer func() { <-sem }()
-
-			if err := w.process(ctx, t); err != nil {
-				log.Printf("transcode failed for %s: %v", t.VideoID, err)
-				errMsg := err.Error()
-				if dbErr := w.setStatus(ctx, t.VideoID, "failed", &errMsg); dbErr != nil {
-					log.Printf("set failed status: %v", dbErr)
-				}
-			}
-		}(task)
 	}
 }
 
-func (w *Worker) process(ctx context.Context, task TranscodeTask) error {
-	log.Printf("processing video %s", task.VideoID)
+func (w *Worker) process(ctx context.Context, job *repository.Job) error {
+	videoID := job.VideoID
+	log.Printf("processing video %s (attempt %d/%d)", videoID, job.Attempts, w.cfg.MaxAttempts)
 
-	if err := w.setStatus(ctx, task.VideoID, "processing", nil); err != nil {
-		return fmt.Errorf("set processing status: %w", err)
-	}
-
-	workDir := filepath.Join(w.tempDir, task.VideoID)
+	workDir := filepath.Join(w.cfg.TempDir, videoID)
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		return fmt.Errorf("create work dir: %w", err)
 	}
@@ -131,26 +216,26 @@ func (w *Worker) process(ctx context.Context, task TranscodeTask) error {
 		}
 	}()
 
-	localOriginal := filepath.Join(workDir, "original"+filepath.Ext(task.OriginalPath))
-	if err := w.downloadFile(ctx, task.OriginalPath, localOriginal); err != nil {
+	localOriginal := filepath.Join(workDir, "original"+filepath.Ext(job.OriginalPath))
+	if err := w.downloadFile(ctx, job.OriginalPath, localOriginal); err != nil {
 		return fmt.Errorf("download original: %w", err)
 	}
-	w.setProgress(ctx, task.VideoID, 10)
+	w.setProgress(ctx, videoID, 10)
 
 	probe, err := ffmpeg.Probe(ctx, localOriginal)
 	if err != nil {
 		return fmt.Errorf("probe video: %w", err)
 	}
-	log.Printf("video %s: duration=%.1fs %dx%d", task.VideoID, probe.Duration, probe.Width, probe.Height)
+	log.Printf("video %s: duration=%.1fs %dx%d", videoID, probe.Duration, probe.Width, probe.Height)
 
-	if err := w.updateMetadata(ctx, task.VideoID, probe.Duration, probe.Width, probe.Height); err != nil {
+	if err := w.setMetadata(ctx, videoID, probe.Duration, probe.Width, probe.Height); err != nil {
 		return fmt.Errorf("update metadata: %w", err)
 	}
-	w.setProgress(ctx, task.VideoID, 15)
+	w.setProgress(ctx, videoID, 15)
 
 	hlsDir := filepath.Join(workDir, "hls")
 	var lastProgressUpdate time.Time
-	variants, err := ffmpeg.TranscodeHLS(ctx, localOriginal, hlsDir, probe.Width, probe.Height, w.hlsSegmentSeconds, probe.FrameRate, probe.Duration, w.accel, w.codecs, w.qualities, len(probe.Audio) > 0, w.encodingConfig, func(f float64) {
+	variants, err := ffmpeg.TranscodeHLS(ctx, localOriginal, hlsDir, probe.Width, probe.Height, w.cfg.HLSSegmentSeconds, probe.FrameRate, probe.Duration, w.cfg.Accel, w.cfg.Codecs, w.cfg.Qualities, len(probe.Audio) > 0, w.cfg.Encoding, func(f float64) {
 		if time.Since(lastProgressUpdate) < time.Second {
 			return
 		}
@@ -159,76 +244,79 @@ func (w *Worker) process(ctx context.Context, task TranscodeTask) error {
 		if pct > 64 {
 			pct = 64
 		}
-		w.setProgress(ctx, task.VideoID, pct)
+		w.setProgress(ctx, videoID, pct)
 	})
 	if err != nil {
 		return fmt.Errorf("transcode HLS: %w", err)
 	}
-	log.Printf("video %s transcoded: variants=%d", task.VideoID, len(variants))
-	w.setProgress(ctx, task.VideoID, 65)
+	log.Printf("video %s transcoded: variants=%d", videoID, len(variants))
+	w.setProgress(ctx, videoID, 65)
 
-	extractedAudio, _ := ffmpeg.ExtractAudio(ctx, localOriginal, hlsDir, probe.Audio, w.hlsSegmentSeconds, w.encodingConfig)
-	log.Printf("video %s audio tracks: extracted=%d/%d", task.VideoID, len(extractedAudio), len(probe.Audio))
-	w.setProgress(ctx, task.VideoID, 72)
+	extractedAudio, _ := ffmpeg.ExtractAudio(ctx, localOriginal, hlsDir, probe.Audio, w.cfg.HLSSegmentSeconds, w.cfg.Encoding)
+	log.Printf("video %s audio tracks: extracted=%d/%d", videoID, len(extractedAudio), len(probe.Audio))
+	w.setProgress(ctx, videoID, 72)
 
 	extractedSubs, _ := ffmpeg.ExtractSubtitles(ctx, localOriginal, hlsDir, probe.Subtitles, probe.Duration)
-	log.Printf("video %s subtitle tracks: extracted=%d/%d", task.VideoID, len(extractedSubs), len(probe.Subtitles))
-	w.setProgress(ctx, task.VideoID, 78)
+	log.Printf("video %s subtitle tracks: extracted=%d/%d", videoID, len(extractedSubs), len(probe.Subtitles))
+	w.setProgress(ctx, videoID, 78)
 
-	if err := w.updateTracks(ctx, task.VideoID, extractedAudio, extractedSubs); err != nil {
-		log.Printf("update tracks for %s: %v (non-fatal)", task.VideoID, err)
+	if err := w.setTracks(ctx, videoID, extractedAudio, extractedSubs); err != nil {
+		log.Printf("update tracks for %s: %v (non-fatal)", videoID, err)
 	}
 
 	thumbDir := filepath.Join(workDir, "thumbnails")
 	previewPath := ""
-	generatedPreview, err := ffmpeg.GeneratePreviewWithConfig(ctx, localOriginal, thumbDir, probe.Duration, w.thumbnailConfig)
-	if err != nil {
-		log.Printf("preview generation failed for %s: %v (non-fatal)", task.VideoID, err)
+	if generated, err := ffmpeg.GeneratePreviewWithConfig(ctx, localOriginal, thumbDir, probe.Duration, w.cfg.Thumbnail); err != nil {
+		log.Printf("preview generation failed for %s: %v (non-fatal)", videoID, err)
 	} else {
-		previewPath = generatedPreview
+		previewPath = generated
 	}
 
-	spritePath, err := ffmpeg.GenerateSpriteWithConfig(ctx, localOriginal, thumbDir, probe.Duration, w.thumbnailConfig)
+	spritePath, err := ffmpeg.GenerateSpriteWithConfig(ctx, localOriginal, thumbDir, probe.Duration, w.cfg.Thumbnail)
 	if err != nil {
-		log.Printf("sprite generation failed for %s: %v (non-fatal)", task.VideoID, err)
+		log.Printf("sprite generation failed for %s: %v (non-fatal)", videoID, err)
 		spritePath = ""
 	}
 	if spritePath != "" {
-		if err := ffmpeg.WriteImageStreamManifestWithConfig(hlsDir, spritePath, probe.Duration, w.thumbnailConfig); err != nil {
-			log.Printf("image stream generation failed for %s: %v (non-fatal)", task.VideoID, err)
+		if err := ffmpeg.WriteImageStreamManifestWithConfig(hlsDir, spritePath, probe.Duration, w.cfg.Thumbnail); err != nil {
+			log.Printf("image stream generation failed for %s: %v (non-fatal)", videoID, err)
 		}
 	}
-	w.setProgress(ctx, task.VideoID, 85)
+	w.setProgress(ctx, videoID, 85)
 
-	if err := ffmpeg.WriteMasterManifestWithConfig(hlsDir, variants, extractedAudio, extractedSubs, w.thumbnailConfig); err != nil {
+	if err := ffmpeg.WriteMasterManifestWithConfig(hlsDir, variants, extractedAudio, extractedSubs, w.cfg.Thumbnail); err != nil {
 		return fmt.Errorf("write master manifest: %w", err)
 	}
 
-	if err := w.uploadHLS(ctx, hlsDir, task.VideoID); err != nil {
+	if err := w.uploadHLS(ctx, hlsDir, videoID); err != nil {
 		return fmt.Errorf("upload HLS: %w", err)
 	}
-	w.setProgress(ctx, task.VideoID, 95)
+	w.setProgress(ctx, videoID, 95)
 
 	if previewPath != "" {
-		remotePath := fmt.Sprintf("thumbnails/%s/preview.jpg", task.VideoID)
+		remotePath := fmt.Sprintf("thumbnails/%s/preview.jpg", videoID)
 		if err := w.seaweed.UploadFile(ctx, remotePath, previewPath); err != nil {
-			log.Printf("upload preview for %s: %v (non-fatal)", task.VideoID, err)
+			log.Printf("upload preview for %s: %v (non-fatal)", videoID, err)
 		}
 	}
 
 	if spritePath != "" {
-		remotePath := fmt.Sprintf("thumbnails/%s/sprite.jpg", task.VideoID)
+		remotePath := fmt.Sprintf("thumbnails/%s/sprite.jpg", videoID)
 		if err := w.seaweed.UploadFile(ctx, remotePath, spritePath); err != nil {
-			log.Printf("upload sprite for %s: %v (non-fatal)", task.VideoID, err)
+			log.Printf("upload sprite for %s: %v (non-fatal)", videoID, err)
+		} else if err := w.setStoryboard(ctx, videoID, probe.Duration); err != nil {
+			log.Printf("set storyboard for %s: %v (non-fatal)", videoID, err)
 		}
 	}
 
-	w.setProgress(ctx, task.VideoID, 100)
-	if err := w.setStatus(ctx, task.VideoID, "ready", nil); err != nil {
+	w.setProgress(ctx, videoID, 100)
+	opCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dbTimeout)
+	defer cancel()
+	if err := w.store.UpdateStatus(opCtx, videoID, model.StatusReady, nil); err != nil {
 		return fmt.Errorf("set ready status: %w", err)
 	}
 
-	log.Printf("video %s processing complete", task.VideoID)
+	log.Printf("video %s processing complete", videoID)
 	return nil
 }
 
@@ -258,24 +346,28 @@ func (w *Worker) uploadHLS(ctx context.Context, hlsDir, videoID string) error {
 	errc := make(chan error, len(jobs))
 	var wg sync.WaitGroup
 
+	uploadCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	for _, job := range jobs {
 		sem <- struct{}{}
 		wg.Add(1)
 		go func(j uploadJob) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if err := w.seaweed.UploadFile(ctx, j.remotePath, j.localPath); err != nil {
+			if uploadCtx.Err() != nil {
+				return
+			}
+			if err := w.seaweed.UploadFile(uploadCtx, j.remotePath, j.localPath); err != nil {
 				errc <- fmt.Errorf("upload %s: %w", j.remotePath, err)
+				cancel() // first failure aborts the remaining uploads
 			}
 		}(job)
 	}
 	wg.Wait()
 	close(errc)
 
-	for err := range errc {
-		return err
-	}
-	return nil
+	return <-errc
 }
 
 func (w *Worker) downloadFile(ctx context.Context, remotePath, localPath string) error {
@@ -294,61 +386,53 @@ func (w *Worker) downloadFile(ctx context.Context, remotePath, localPath string)
 	if _, err := io.Copy(f, rc); err != nil {
 		return fmt.Errorf("write local file: %w", err)
 	}
-	return nil
-}
-
-func (w *Worker) setStatus(ctx context.Context, videoID, status string, errMsg *string) error {
-	q := `UPDATE videos SET status = $1, error_message = $2 WHERE id = $3`
-	_, err := w.db.Exec(ctx, q, status, errMsg, videoID)
-	if err != nil {
-		return fmt.Errorf("update status: %w", err)
-	}
-	return nil
+	return f.Close()
 }
 
 func (w *Worker) setProgress(ctx context.Context, videoID string, pct int) {
-	if _, err := w.db.Exec(ctx, `UPDATE videos SET progress = $1 WHERE id = $2`, pct, videoID); err != nil {
+	opCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dbTimeout)
+	defer cancel()
+	if err := w.store.SetProgress(opCtx, videoID, pct); err != nil {
 		log.Printf("set progress %d%% for %s: %v", pct, videoID, err)
 	}
 }
 
-func (w *Worker) updateMetadata(ctx context.Context, videoID string, duration float64, width, height int) error {
-	q := `UPDATE videos SET duration = $1, width = $2, height = $3 WHERE id = $4`
-	_, err := w.db.Exec(ctx, q, duration, width, height, videoID)
-	if err != nil {
-		return fmt.Errorf("update metadata: %w", err)
-	}
-	return nil
+func (w *Worker) setMetadata(ctx context.Context, videoID string, duration float64, width, height int) error {
+	opCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dbTimeout)
+	defer cancel()
+	return w.store.SetMetadata(opCtx, videoID, duration, width, height)
 }
 
-func (w *Worker) updateTracks(ctx context.Context, videoID string, audio []ffmpeg.AudioStream, subs []ffmpeg.SubtitleStream) error {
-	type track struct {
-		Index    int    `json:"index"`
-		Language string `json:"language,omitempty"`
-		Title    string `json:"title,omitempty"`
-	}
-
-	audioTracks := make([]track, len(audio))
+func (w *Worker) setTracks(ctx context.Context, videoID string, audio []ffmpeg.AudioStream, subs []ffmpeg.SubtitleStream) error {
+	audioTracks := make([]model.Track, len(audio))
 	for i, a := range audio {
-		audioTracks[i] = track{Index: a.TypeIndex, Language: a.Language, Title: a.Title}
+		audioTracks[i] = model.Track{Index: a.TypeIndex, Language: a.Language, Title: a.Title}
 	}
-	subTracks := make([]track, len(subs))
+	subTracks := make([]model.Track, len(subs))
 	for i, s := range subs {
-		subTracks[i] = track{Index: s.TypeIndex, Language: s.Language, Title: s.Title}
+		subTracks[i] = model.Track{Index: s.TypeIndex, Language: s.Language, Title: s.Title}
 	}
+	opCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dbTimeout)
+	defer cancel()
+	return w.store.SetTracks(opCtx, videoID, audioTracks, subTracks)
+}
 
-	audioJSON, err := json.Marshal(audioTracks)
-	if err != nil {
-		return fmt.Errorf("marshal audio tracks: %w", err)
+func (w *Worker) setStoryboard(ctx context.Context, videoID string, duration float64) error {
+	t := w.cfg.Thumbnail.WithDefaults()
+	// Must mirror the tile count used by ffmpeg.GenerateSpriteWithConfig so
+	// cue coordinates match the actual sprite grid.
+	count := int(math.Ceil(duration / float64(t.SpriteIntervalSeconds)))
+	if count < 1 {
+		count = 1
 	}
-	subJSON, err := json.Marshal(subTracks)
-	if err != nil {
-		return fmt.Errorf("marshal subtitle tracks: %w", err)
+	sb := model.Storyboard{
+		IntervalSeconds: t.SpriteIntervalSeconds,
+		TileWidth:       t.SpriteWidth,
+		TileHeight:      t.SpriteHeight,
+		Columns:         t.SpriteColumns,
+		TileCount:       count,
 	}
-
-	q := `UPDATE videos SET audio_tracks = $1, subtitle_tracks = $2 WHERE id = $3`
-	if _, err := w.db.Exec(ctx, q, audioJSON, subJSON, videoID); err != nil {
-		return fmt.Errorf("update tracks: %w", err)
-	}
-	return nil
+	opCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dbTimeout)
+	defer cancel()
+	return w.store.SetStoryboard(opCtx, videoID, sb)
 }

@@ -11,11 +11,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/redis/go-redis/v9"
 
 	"github.com/evadepw/evadeplayer-platform/internal/config"
 	"github.com/evadepw/evadeplayer-platform/internal/handler"
-	"github.com/evadepw/evadeplayer-platform/internal/queue"
 	"github.com/evadepw/evadeplayer-platform/internal/repository"
 	"github.com/evadepw/evadeplayer-platform/internal/service"
 	"github.com/evadepw/evadeplayer-platform/internal/storage"
@@ -41,24 +39,11 @@ func main() {
 	}
 	log.Println("connected to postgres")
 
-	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		log.Fatalf("connect to redis: %v", err)
-	}
-	log.Println("connected to redis")
-
 	seaweed := storage.NewSeaweedFS(cfg.SeaweedFSFiler)
 
 	videoRepo := repository.NewVideoRepo(db)
-	producer := queue.NewProducer(rdb, cfg.RedisQueueKey)
-
-	videoSvc := service.NewVideoService(videoRepo, cfg.HLSTokenSecret, cfg.PublicHost, cfg.HLSRequireToken, service.SpriteConfig{
-		IntervalSeconds: cfg.SpriteIntervalSeconds,
-		Width:           cfg.SpriteWidth,
-		Height:          cfg.SpriteHeight,
-		Columns:         cfg.SpriteColumns,
-	})
-	uploadSvc := service.NewUploadService(videoRepo, seaweed, producer)
+	videoSvc := service.NewVideoService(videoRepo, cfg.HLSTokenSecret, cfg.PublicHost, cfg.HLSRequireToken)
+	uploadSvc := service.NewUploadService(videoRepo, seaweed)
 
 	videoH := handler.NewVideoHandler(videoSvc)
 	uploadH := handler.NewUploadHandler(uploadSvc, cfg.MaxUploadSize)

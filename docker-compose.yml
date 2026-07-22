@@ -17,20 +17,6 @@ services:
       retries: 10
       start_period: 30s
 
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    command: redis-server --appendonly yes
-    volumes:
-      - redis_data:/data
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
   seaweedfs-master:
     image: chrislusf/seaweedfs:latest
     restart: unless-stopped
@@ -90,15 +76,17 @@ services:
       - API_PORT=8000
       - DB_HOST=postgres
       - DB_PORT=5432
-      - REDIS_ADDR=redis:6379
       - SEAWEEDFS_FILER=http://seaweedfs-filer:8888
-      - SEAWEEDFS_MASTER=http://seaweedfs-master:9333
     ports:
       - "${API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8000/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     depends_on:
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
       seaweedfs-filer:
         condition: service_started
@@ -115,11 +103,11 @@ services:
     environment:
       - DB_HOST=postgres
       - DB_PORT=5432
-      - REDIS_ADDR=redis:6379
       - SEAWEEDFS_FILER=http://seaweedfs-filer:8888
-      - SEAWEEDFS_MASTER=http://seaweedfs-master:9333
+    # Give in-flight jobs time to release cleanly back to the queue.
+    stop_grace_period: 30s
     depends_on:
-      redis:
+      postgres:
         condition: service_healthy
       seaweedfs-filer:
         condition: service_started
@@ -148,7 +136,6 @@ services:
 
 volumes:
   postgres_data:
-  redis_data:
   seaweedfs_master:
   seaweedfs_volume:
   seaweedfs_filer:

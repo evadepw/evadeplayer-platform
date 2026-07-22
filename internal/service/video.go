@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math"
 	"strconv"
 	"time"
 
@@ -19,28 +18,19 @@ var _ VideoStorer = (*repository.VideoRepo)(nil)
 
 const hlsTokenTTL = 4 * time.Hour
 
-type SpriteConfig struct {
-	IntervalSeconds int
-	Width           int
-	Height          int
-	Columns         int
-}
-
 type VideoService struct {
 	videoRepo      VideoStorer
 	hlsTokenSecret []byte
 	requireToken   bool
 	publicBaseURL  string
-	sprite         SpriteConfig
 }
 
-func NewVideoService(videoRepo VideoStorer, hlsTokenSecret, publicHost string, requireToken bool, sprite SpriteConfig) *VideoService {
+func NewVideoService(videoRepo VideoStorer, hlsTokenSecret, publicHost string, requireToken bool) *VideoService {
 	return &VideoService{
 		videoRepo:      videoRepo,
 		hlsTokenSecret: []byte(hlsTokenSecret),
 		requireToken:   requireToken,
 		publicBaseURL:  publicHost,
-		sprite:         sprite,
 	}
 }
 
@@ -218,52 +208,43 @@ type StoryboardCoords struct {
 	Y int `json:"y"`
 }
 
+// GetStoryboard builds scrubbing cues from the sprite metadata the transcoder
+// recorded for this exact video, so coordinates always match the real sprite.
+// Videos without a stored storyboard (sprite generation failed or the video is
+// not ready) return ErrNotFound.
 func (s *VideoService) GetStoryboard(ctx context.Context, id string) ([]StoryboardCue, error) {
 	v, err := s.videoRepo.FindByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	if v.Status != model.StatusReady || v.Duration == nil {
+	if v.Status != model.StatusReady || v.Duration == nil || len(v.StoryboardRaw) == 0 {
 		return nil, repository.ErrNotFound
 	}
 
-	cfg := s.sprite
-	if cfg.IntervalSeconds < 1 {
-		cfg.IntervalSeconds = 10
+	var sb model.Storyboard
+	if err := json.Unmarshal(v.StoryboardRaw, &sb); err != nil {
+		return nil, fmt.Errorf("decode storyboard metadata: %w", err)
 	}
-	if cfg.Width < 1 {
-		cfg.Width = 320
-	}
-	if cfg.Height < 1 {
-		cfg.Height = 180
-	}
-	if cfg.Columns < 1 {
-		cfg.Columns = 10
+	if sb.IntervalSeconds < 1 || sb.Columns < 1 || sb.TileCount < 1 {
+		return nil, repository.ErrNotFound
 	}
 
 	duration := *v.Duration
-	count := int(math.Ceil(duration / float64(cfg.IntervalSeconds)))
-	if count < 1 {
-		count = 1
-	}
-
 	spriteURL := fmt.Sprintf("%s/thumbnails/%s/sprite.jpg", s.publicBaseURL, id)
-	cues := make([]StoryboardCue, count)
-	for i := range count {
-		start := float64(i * cfg.IntervalSeconds)
-		end := float64((i + 1) * cfg.IntervalSeconds)
+	cues := make([]StoryboardCue, sb.TileCount)
+	for i := range sb.TileCount {
+		start := float64(i * sb.IntervalSeconds)
+		end := float64((i + 1) * sb.IntervalSeconds)
 		if end > duration {
 			end = duration
 		}
-		col := i % cfg.Columns
-		row := i / cfg.Columns
 		cues[i] = StoryboardCue{
 			URL:       spriteURL,
 			StartTime: start,
 			EndTime:   end,
-			Width:     cfg.Width,
-			Height:    cfg.Height,
-			Coords:    StoryboardCoords{X: col * cfg.Width, Y: row * cfg.Height},
+			Width:     sb.TileWidth,
+			Height:    sb.TileHeight,
+			Coords:    StoryboardCoords{X: (i % sb.Columns) * sb.TileWidth, Y: (i / sb.Columns) * sb.TileHeight},
 		}
 	}
 	return cues, nil

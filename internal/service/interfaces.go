@@ -12,13 +12,7 @@ type VideoStorer interface {
 	FindByID(ctx context.Context, id string) (*model.Video, error)
 	FindByIDs(ctx context.Context, ids []string) (map[string]*model.Video, error)
 	List(ctx context.Context, limit, offset int) ([]*model.Video, int, error)
-	UpdateStatus(ctx context.Context, id string, status model.VideoStatus, errMsg *string) error
-	SetSegments(ctx context.Context, id string, segments []byte) error
 	DeleteByID(ctx context.Context, id string) error
-}
-
-type TaskEnqueuer interface {
-	Enqueue(ctx context.Context, task *model.TranscodeTask) error
 }
 
 type BlobStorage interface {

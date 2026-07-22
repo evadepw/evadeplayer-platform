@@ -11,9 +11,6 @@ import (
 type API struct {
 	DB DB
 
-	RedisAddr     string
-	RedisQueueKey string
-
 	SeaweedFSFiler string
 
 	ServiceKey      string
@@ -25,11 +22,6 @@ type API struct {
 	ReadPublic    bool // true = GET endpoints require no auth
 	CORSOrigins   []string
 	MaxUploadSize int64 // bytes
-
-	SpriteIntervalSeconds int
-	SpriteWidth           int
-	SpriteHeight          int
-	SpriteColumns         int
 }
 
 func LoadAPI() (*API, error) {
@@ -38,8 +30,6 @@ func LoadAPI() (*API, error) {
 
 	cfg := &API{
 		DB:              loadDB(&missing),
-		RedisAddr:       getEnv("REDIS_ADDR", "localhost:6379"),
-		RedisQueueKey:   getEnv("REDIS_QUEUE_KEY", "transcoding_queue"),
 		SeaweedFSFiler:  getEnv("SEAWEEDFS_FILER", "http://localhost:8888"),
 		ServiceKey:      req("SERVICE_KEY"),
 		HLSTokenSecret:  getEnv("HLS_TOKEN_SECRET", ""),
@@ -48,11 +38,6 @@ func LoadAPI() (*API, error) {
 		ReadPublic:      getEnvBool("READ_PUBLIC", true),
 		CORSOrigins:     parseCORSOrigins(getEnv("CORS_ORIGINS", "*")),
 		MaxUploadSize:   getEnvInt64("MAX_UPLOAD_SIZE_GB", 50) << 30,
-
-		SpriteIntervalSeconds: getEnvPositiveInt("SPRITE_INTERVAL_SECONDS", 10),
-		SpriteWidth:           getEnvPositiveInt("SPRITE_WIDTH", 320),
-		SpriteHeight:          getEnvPositiveInt("SPRITE_HEIGHT", 180),
-		SpriteColumns:         getEnvPositiveInt("SPRITE_COLUMNS", 10),
 	}
 
 	if err := missingErr(missing); err != nil {

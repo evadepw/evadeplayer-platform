@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/redis/go-redis/v9"
 
 	"github.com/evadepw/evadeplayer-platform/internal/config"
+	"github.com/evadepw/evadeplayer-platform/internal/repository"
 	"github.com/evadepw/evadeplayer-platform/internal/storage"
 	"github.com/evadepw/evadeplayer-platform/internal/worker"
 )
@@ -40,15 +40,20 @@ func main() {
 	}
 	log.Println("connected to postgres")
 
-	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		log.Fatalf("connect to redis: %v", err)
-	}
-	log.Println("connected to redis")
-
 	seaweed := storage.NewSeaweedFS(cfg.SeaweedFSFiler)
+	videoRepo := repository.NewVideoRepo(db)
 
-	w := worker.New(rdb, cfg.RedisQueueKey, db, seaweed, cfg.TempDir, cfg.Workers, cfg.HLSSegmentSeconds, cfg.Accel, cfg.Codecs, cfg.Qualities, cfg.Thumbnail, cfg.Encoding)
+	w := worker.New(videoRepo, seaweed, worker.Config{
+		TempDir:           cfg.TempDir,
+		Concurrency:       cfg.Workers,
+		MaxAttempts:       cfg.MaxAttempts,
+		HLSSegmentSeconds: cfg.HLSSegmentSeconds,
+		Accel:             cfg.Accel,
+		Codecs:            cfg.Codecs,
+		Qualities:         cfg.Qualities,
+		Thumbnail:         cfg.Thumbnail,
+		Encoding:          cfg.Encoding,
+	})
 
 	runCtx, runCancel := context.WithCancel(context.Background())
 	defer runCancel()

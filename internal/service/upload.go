@@ -15,11 +15,10 @@ import (
 type UploadService struct {
 	videoRepo VideoStorer
 	storage   BlobStorage
-	producer  TaskEnqueuer
 }
 
-func NewUploadService(videoRepo VideoStorer, storage BlobStorage, producer TaskEnqueuer) *UploadService {
-	return &UploadService{videoRepo: videoRepo, storage: storage, producer: producer}
+func NewUploadService(videoRepo VideoStorer, storage BlobStorage) *UploadService {
+	return &UploadService{videoRepo: videoRepo, storage: storage}
 }
 
 type UploadInput struct {
@@ -43,19 +42,12 @@ func (s *UploadService) Upload(ctx context.Context, in *UploadInput) (*model.Vid
 		SizeBytes:    in.Size,
 		Segments:     in.Segments,
 	}
+	// Creating the row in status 'pending' is what enqueues the video:
+	// workers poll PostgreSQL for pending rows. If the insert fails, remove
+	// the uploaded blob so storage is not left with an orphan.
 	if err := s.videoRepo.CreateWithID(ctx, v); err != nil {
-		_ = s.storage.Delete(context.Background(), originalPath)
+		_ = s.storage.Delete(context.WithoutCancel(ctx), originalPath)
 		return nil, fmt.Errorf("create video record: %w", err)
-	}
-
-	task := &model.TranscodeTask{
-		VideoID:      v.ID,
-		OriginalPath: originalPath,
-	}
-	if err := s.producer.Enqueue(ctx, task); err != nil {
-		errMsg := err.Error()
-		_ = s.videoRepo.UpdateStatus(ctx, v.ID, model.StatusFailed, &errMsg)
-		return nil, fmt.Errorf("enqueue transcode task: %w", err)
 	}
 
 	return v, nil

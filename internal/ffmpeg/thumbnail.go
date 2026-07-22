@@ -31,7 +31,7 @@ func DefaultThumbnailConfig() ThumbnailConfig {
 	}
 }
 
-func (c ThumbnailConfig) withDefaults() ThumbnailConfig {
+func (c ThumbnailConfig) WithDefaults() ThumbnailConfig {
 	def := DefaultThumbnailConfig()
 	if c.SpriteColumns < 1 {
 		c.SpriteColumns = def.SpriteColumns
@@ -62,7 +62,7 @@ func GeneratePreview(ctx context.Context, inputPath, outputDir string, duration 
 }
 
 func GeneratePreviewWithConfig(ctx context.Context, inputPath, outputDir string, duration float64, cfg ThumbnailConfig) (string, error) {
-	cfg = cfg.withDefaults()
+	cfg = cfg.WithDefaults()
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return "", fmt.Errorf("create thumbnail dir: %w", err)
 	}
@@ -101,7 +101,7 @@ func GenerateSprite(ctx context.Context, inputPath, outputDir string, duration f
 }
 
 func GenerateSpriteWithConfig(ctx context.Context, inputPath, outputDir string, duration float64, cfg ThumbnailConfig) (string, error) {
-	cfg = cfg.withDefaults()
+	cfg = cfg.WithDefaults()
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return "", fmt.Errorf("create thumbnail dir: %w", err)
 	}
@@ -142,7 +142,7 @@ func WriteImageStreamManifest(hlsDir, spritePath string, duration float64) error
 }
 
 func WriteImageStreamManifestWithConfig(hlsDir, spritePath string, duration float64, cfg ThumbnailConfig) error {
-	cfg = cfg.withDefaults()
+	cfg = cfg.WithDefaults()
 	imagesDir := filepath.Join(hlsDir, "images")
 	if err := os.MkdirAll(imagesDir, 0o755); err != nil {
 		return fmt.Errorf("create image stream dir: %w", err)

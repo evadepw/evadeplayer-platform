@@ -10,12 +10,10 @@ import (
 type Transcoder struct {
 	DB DB
 
-	RedisAddr     string
-	RedisQueueKey string
-
 	SeaweedFSFiler string
 
 	Workers           int
+	MaxAttempts       int
 	TempDir           string
 	HLSSegmentSeconds int
 	Accel             string
@@ -30,10 +28,9 @@ func LoadTranscoder() (*Transcoder, error) {
 
 	cfg := &Transcoder{
 		DB:                loadDB(&missing),
-		RedisAddr:         getEnv("REDIS_ADDR", "localhost:6379"),
-		RedisQueueKey:     getEnv("REDIS_QUEUE_KEY", "transcoding_queue"),
 		SeaweedFSFiler:    getEnv("SEAWEEDFS_FILER", "http://localhost:8888"),
 		Workers:           getEnvPositiveInt("TRANSCODE_WORKERS", 2),
+		MaxAttempts:       getEnvPositiveInt("TRANSCODE_MAX_ATTEMPTS", 3),
 		TempDir:           getEnv("TRANSCODE_TEMP_DIR", "/tmp/evadeplayer"),
 		HLSSegmentSeconds: getEnvPositiveInt("TRANSCODE_HLS_SEGMENT_SECONDS", 4),
 		Accel:             getEnv("TRANSCODE_ACCEL", "cpu"),

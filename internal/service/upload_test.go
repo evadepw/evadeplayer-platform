@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evadepw/evadeplayer-platform/internal/model"
 	"github.com/evadepw/evadeplayer-platform/internal/service"
 )
 
@@ -38,17 +37,8 @@ func (f *fakeStorage) DeleteDir(_ context.Context, path string) error {
 	return nil
 }
 
-type fakeProducer struct {
-	task *model.TranscodeTask
-}
-
-func (f *fakeProducer) Enqueue(_ context.Context, task *model.TranscodeTask) error {
-	f.task = task
-	return nil
-}
-
 func newUploadSvc(videos *fakeVideoStore) *service.UploadService {
-	return service.NewUploadService(videos, &fakeStorage{}, &fakeProducer{})
+	return service.NewUploadService(videos, &fakeStorage{})
 }
 
 func uploadInput(overrides ...func(*service.UploadInput)) *service.UploadInput {
@@ -77,7 +67,7 @@ func TestUploadService_Upload(t *testing.T) {
 
 func TestUploadService_Upload_StorageError(t *testing.T) {
 	videos := &fakeVideoStore{}
-	svc := service.NewUploadService(videos, &fakeStorage{uploadErr: errors.New("disk full")}, &fakeProducer{})
+	svc := service.NewUploadService(videos, &fakeStorage{uploadErr: errors.New("disk full")})
 
 	_, err := svc.Upload(context.Background(), uploadInput())
 	if err == nil {
@@ -85,25 +75,19 @@ func TestUploadService_Upload_StorageError(t *testing.T) {
 	}
 }
 
-func TestUploadService_Upload_EnqueueError(t *testing.T) {
-	videos := &fakeVideoStore{}
-	producer := &errorProducer{}
-	svc := service.NewUploadService(videos, &fakeStorage{}, producer)
+func TestUploadService_Upload_CreateError_CleansUpBlob(t *testing.T) {
+	videos := &fakeVideoStore{createErr: errors.New("db down")}
+	st := &fakeStorage{}
+	svc := service.NewUploadService(videos, st)
 
 	_, err := svc.Upload(context.Background(), uploadInput())
 	if err == nil {
-		t.Error("expected error on enqueue failure")
+		t.Fatal("expected error on create failure")
 	}
-	if videos.video == nil {
-		t.Fatal("video record must be created before enqueue attempt")
+	if len(st.uploads) != 1 {
+		t.Fatalf("expected 1 upload, got %d", len(st.uploads))
 	}
-	if videos.video.Status != model.StatusFailed {
-		t.Errorf("expected status failed after enqueue error, got %s", videos.video.Status)
+	if len(st.deletes) != 1 || st.deletes[0] != st.uploads[0].path {
+		t.Errorf("uploaded blob must be deleted on create failure, deletes=%v", st.deletes)
 	}
-}
-
-type errorProducer struct{}
-
-func (e *errorProducer) Enqueue(_ context.Context, _ *model.TranscodeTask) error {
-	return errors.New("queue unavailable")
 }

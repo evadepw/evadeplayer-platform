@@ -851,7 +851,7 @@ func WriteMasterManifest(outputDir string, variants []Variant, audio []AudioStre
 }
 
 func WriteMasterManifestWithConfig(outputDir string, variants []Variant, audio []AudioStream, subtitles []SubtitleStream, thumbnailCfg ThumbnailConfig) error {
-	thumbnailCfg = thumbnailCfg.withDefaults()
+	thumbnailCfg = thumbnailCfg.WithDefaults()
 	var sb strings.Builder
 	sb.WriteString("#EXTM3U\n")
 	sb.WriteString("#EXT-X-VERSION:6\n\n")

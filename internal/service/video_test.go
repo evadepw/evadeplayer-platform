@@ -71,7 +71,7 @@ func TestGetVideo_Ready(t *testing.T) {
 			UpdatedAt: time.Now(),
 		},
 	}
-	svc := service.NewVideoService(store, testHLSSecret, "http://localhost", true, service.SpriteConfig{})
+	svc := service.NewVideoService(store, testHLSSecret, "http://localhost", true)
 
 	resp, err := svc.GetVideo(context.Background(), id)
 	if err != nil {
@@ -98,7 +98,7 @@ func TestGetVideo_Pending(t *testing.T) {
 	store := &fakeVideoStore{
 		video: &model.Video{ID: "v1", Status: model.StatusPending},
 	}
-	svc := service.NewVideoService(store, testHLSSecret, "http://localhost", true, service.SpriteConfig{})
+	svc := service.NewVideoService(store, testHLSSecret, "http://localhost", true)
 
 	resp, err := svc.GetVideo(context.Background(), "v1")
 	if err != nil {
@@ -114,7 +114,7 @@ func TestGetVideo_Pending(t *testing.T) {
 
 func TestGetVideo_NotFound(t *testing.T) {
 	store := &fakeVideoStore{}
-	svc := service.NewVideoService(store, testHLSSecret, "http://localhost", true, service.SpriteConfig{})
+	svc := service.NewVideoService(store, testHLSSecret, "http://localhost", true)
 
 	_, err := svc.GetVideo(context.Background(), "no-such-id")
 	if err == nil {
@@ -122,14 +122,66 @@ func TestGetVideo_NotFound(t *testing.T) {
 	}
 }
 
+// --- VideoService.GetStoryboard ---
+
+func TestGetStoryboard_FromStoredMetadata(t *testing.T) {
+	id := "vid-storyboard"
+	dur := 25.0
+	store := &fakeVideoStore{
+		video: &model.Video{
+			ID:            id,
+			Status:        model.StatusReady,
+			Duration:      &dur,
+			StoryboardRaw: []byte(`{"interval_seconds":10,"tile_width":320,"tile_height":180,"columns":2,"tile_count":3}`),
+		},
+	}
+	svc := service.NewVideoService(store, testHLSSecret, "http://localhost", true)
+
+	cues, err := svc.GetStoryboard(context.Background(), id)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cues) != 3 {
+		t.Fatalf("expected 3 cues, got %d", len(cues))
+	}
+	// Third tile wraps to the second row of a 2-column sprite.
+	if cues[2].Coords.X != 0 || cues[2].Coords.Y != 180 {
+		t.Errorf("cue 2 coords = (%d,%d), want (0,180)", cues[2].Coords.X, cues[2].Coords.Y)
+	}
+	// Last cue is clamped to the video duration.
+	if cues[2].EndTime != dur {
+		t.Errorf("last cue end = %v, want %v", cues[2].EndTime, dur)
+	}
+	if !strings.Contains(cues[0].URL, "/thumbnails/"+id+"/sprite.jpg") {
+		t.Errorf("cue URL must point at the sprite, got %q", cues[0].URL)
+	}
+}
+
+func TestGetStoryboard_NoMetadata(t *testing.T) {
+	id := "vid-no-storyboard"
+	dur := 25.0
+	store := &fakeVideoStore{
+		video: &model.Video{ID: id, Status: model.StatusReady, Duration: &dur},
+	}
+	svc := service.NewVideoService(store, testHLSSecret, "http://localhost", true)
+
+	if _, err := svc.GetStoryboard(context.Background(), id); err == nil {
+		t.Error("expected not-found error when no storyboard metadata is stored")
+	}
+}
+
 // --- in-memory VideoStorer ---
 
 type fakeVideoStore struct {
-	video  *model.Video
-	videos []*model.Video
+	video     *model.Video
+	videos    []*model.Video
+	createErr error
 }
 
 func (f *fakeVideoStore) CreateWithID(_ context.Context, v *model.Video) error {
+	if f.createErr != nil {
+		return f.createErr
+	}
 	f.video = v
 	return nil
 }
@@ -152,21 +204,6 @@ func (f *fakeVideoStore) List(_ context.Context, limit, offset int) ([]*model.Vi
 		items = append(items, &cp)
 	}
 	return items, len(f.videos), nil
-}
-
-func (f *fakeVideoStore) UpdateStatus(_ context.Context, id string, status model.VideoStatus, errMsg *string) error {
-	if f.video != nil && f.video.ID == id {
-		f.video.Status = status
-		f.video.ErrorMessage = errMsg
-	}
-	return nil
-}
-
-func (f *fakeVideoStore) SetSegments(_ context.Context, id string, segments []byte) error {
-	if f.video != nil && f.video.ID == id {
-		f.video.Segments = segments
-	}
-	return nil
 }
 
 func (f *fakeVideoStore) FindByIDs(_ context.Context, ids []string) (map[string]*model.Video, error) {

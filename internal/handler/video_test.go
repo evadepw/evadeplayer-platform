@@ -110,7 +110,7 @@ func sampleVideo(id string, status model.VideoStatus) *model.Video {
 
 func newVideoHandler(videos ...*model.Video) *handler.VideoHandler {
 	store := newMemVideos(videos...)
-	svc := service.NewVideoService(store, "hls-secret-32-chars-minimum-ok!!", "http://localhost", true, service.SpriteConfig{})
+	svc := service.NewVideoService(store, "hls-secret-32-chars-minimum-ok!!", "http://localhost", true)
 	return handler.NewVideoHandler(svc)
 }
 
