@@ -34,10 +34,14 @@ type Codec struct {
 	AudioEnc    string
 	ExtraArgs   []string
 	ScaleFilter string
-	SegmentType string // "mpegts" or "fmp4"
-	SegmentExt  string // "ts" or "m4s"
-	HLSCodecs   string // CODECS= value for master manifest
-	Optional    bool   // if true, failure skips the codec rather than aborting
+	// OriginalFilter processes the unscaled "original" rung. It must still pin
+	// the pixel format (and upload to GPU memory for hardware encoders) so that
+	// 10-bit/4:2:2 sources encode to the 8-bit profiles declared in HLSCodecs.
+	OriginalFilter string
+	SegmentType    string // "mpegts" or "fmp4"
+	SegmentExt     string // "ts" or "m4s"
+	HLSCodecs      string // CODECS= value for master manifest
+	Optional       bool   // if true, failure skips the codec rather than aborting
 }
 
 // EncodingConfig holds tunable encoder parameters exposed via environment variables.
@@ -48,6 +52,7 @@ type EncodingConfig struct {
 	AV1CRF          int    // libaom-av1 CRF value 0–63
 	H264CRF         int    // libx264 CRF 0–51; 0=bitrate mode. Typical: 20–24
 	H265CRF         int    // libx265 CRF 0–51; 0=bitrate mode. Typical: 24–28
+	AudioBitrate    string // AAC bitrate for separate audio renditions (e.g. "128k")
 	AudioSampleRate int    // output audio sample rate in Hz
 	SceneCut        bool   // enable scene-cut keyframe insertion
 }
@@ -60,6 +65,7 @@ func DefaultEncodingConfig() EncodingConfig {
 		AV1CRF:          30,
 		H264CRF:         0,
 		H265CRF:         0,
+		AudioBitrate:    "128k",
 		AudioSampleRate: 48000,
 		SceneCut:        false,
 	}
@@ -88,10 +94,11 @@ var Codecs = []Codec{
 			"-profile:v", "high",
 			"-level:v", "5.1",
 		},
-		ScaleFilter: "scale=-2:%d",
-		SegmentType: "fmp4",
-		SegmentExt:  "m4s",
-		HLSCodecs:   "avc1.640033,mp4a.40.2",
+		ScaleFilter:    "scale=-2:%d:flags=lanczos,format=yuv420p",
+		OriginalFilter: "format=yuv420p",
+		SegmentType:    "fmp4",
+		SegmentExt:     "m4s",
+		HLSCodecs:      "avc1.640033,mp4a.40.2",
 	},
 	{
 		Name:     "h265",
@@ -100,11 +107,12 @@ var Codecs = []Codec{
 		ExtraArgs: []string{
 			"-tag:v", "hvc1",
 		},
-		ScaleFilter: "scale=-2:%d",
-		SegmentType: "fmp4",
-		SegmentExt:  "m4s",
-		HLSCodecs:   "hvc1.1.6.L150.90,mp4a.40.2",
-		Optional:    true,
+		ScaleFilter:    "scale=-2:%d:flags=lanczos,format=yuv420p",
+		OriginalFilter: "format=yuv420p",
+		SegmentType:    "fmp4",
+		SegmentExt:     "m4s",
+		HLSCodecs:      "hvc1.1.6.L150.90,mp4a.40.2",
+		Optional:       true,
 	},
 	{
 		Name:     "av1",
@@ -114,11 +122,12 @@ var Codecs = []Codec{
 			"-row-mt", "1",
 			"-tiles", "2x2",
 		},
-		ScaleFilter: "scale=-2:%d",
-		SegmentType: "fmp4",
-		SegmentExt:  "m4s",
-		HLSCodecs:   "av01.0.08M.08,mp4a.40.2",
-		Optional:    true,
+		ScaleFilter:    "scale=-2:%d:flags=lanczos,format=yuv420p",
+		OriginalFilter: "format=yuv420p",
+		SegmentType:    "fmp4",
+		SegmentExt:     "m4s",
+		HLSCodecs:      "av01.0.08M.08,mp4a.40.2",
+		Optional:       true,
 	},
 }
 
@@ -131,10 +140,11 @@ var nvidiaCodecs = []Codec{
 		ExtraArgs: []string{
 			"-profile:v", "high",
 		},
-		ScaleFilter: "scale_cuda=w=-2:h=%d",
-		SegmentType: "fmp4",
-		SegmentExt:  "m4s",
-		HLSCodecs:   "avc1.640033,mp4a.40.2",
+		ScaleFilter:    "scale_cuda=w=-2:h=%d:format=nv12",
+		OriginalFilter: "scale_cuda=w=iw:h=ih:format=nv12",
+		SegmentType:    "fmp4",
+		SegmentExt:     "m4s",
+		HLSCodecs:      "avc1.640033,mp4a.40.2",
 	},
 	{
 		Name:      "h265",
@@ -144,22 +154,24 @@ var nvidiaCodecs = []Codec{
 		ExtraArgs: []string{
 			"-tag:v", "hvc1",
 		},
-		ScaleFilter: "scale_cuda=w=-2:h=%d",
-		SegmentType: "fmp4",
-		SegmentExt:  "m4s",
-		HLSCodecs:   "hvc1.1.6.L150.90,mp4a.40.2",
-		Optional:    true,
+		ScaleFilter:    "scale_cuda=w=-2:h=%d:format=nv12",
+		OriginalFilter: "scale_cuda=w=iw:h=ih:format=nv12",
+		SegmentType:    "fmp4",
+		SegmentExt:     "m4s",
+		HLSCodecs:      "hvc1.1.6.L150.90,mp4a.40.2",
+		Optional:       true,
 	},
 	{
-		Name:        "av1",
-		InputArgs:   []string{"-hwaccel", "cuda", "-hwaccel_output_format", "cuda"},
-		VideoEnc:    "av1_nvenc",
-		AudioEnc:    "aac",
-		ScaleFilter: "scale_cuda=w=-2:h=%d",
-		SegmentType: "fmp4",
-		SegmentExt:  "m4s",
-		HLSCodecs:   "av01.0.08M.08,mp4a.40.2",
-		Optional:    true,
+		Name:           "av1",
+		InputArgs:      []string{"-hwaccel", "cuda", "-hwaccel_output_format", "cuda"},
+		VideoEnc:       "av1_nvenc",
+		AudioEnc:       "aac",
+		ScaleFilter:    "scale_cuda=w=-2:h=%d:format=nv12",
+		OriginalFilter: "scale_cuda=w=iw:h=ih:format=nv12",
+		SegmentType:    "fmp4",
+		SegmentExt:     "m4s",
+		HLSCodecs:      "av01.0.08M.08,mp4a.40.2",
+		Optional:       true,
 	},
 }
 
@@ -172,10 +184,11 @@ var vaapiCodecs = []Codec{
 		ExtraArgs: []string{
 			"-profile:v", "high",
 		},
-		ScaleFilter: "format=nv12,hwupload,scale_vaapi=w=-2:h=%d",
-		SegmentType: "fmp4",
-		SegmentExt:  "m4s",
-		HLSCodecs:   "avc1.640033,mp4a.40.2",
+		ScaleFilter:    "format=nv12,hwupload,scale_vaapi=w=-2:h=%d",
+		OriginalFilter: "format=nv12,hwupload",
+		SegmentType:    "fmp4",
+		SegmentExt:     "m4s",
+		HLSCodecs:      "avc1.640033,mp4a.40.2",
 	},
 	{
 		Name:      "h265",
@@ -185,22 +198,24 @@ var vaapiCodecs = []Codec{
 		ExtraArgs: []string{
 			"-tag:v", "hvc1",
 		},
-		ScaleFilter: "format=nv12,hwupload,scale_vaapi=w=-2:h=%d",
-		SegmentType: "fmp4",
-		SegmentExt:  "m4s",
-		HLSCodecs:   "hvc1.1.6.L150.90,mp4a.40.2",
-		Optional:    true,
+		ScaleFilter:    "format=nv12,hwupload,scale_vaapi=w=-2:h=%d",
+		OriginalFilter: "format=nv12,hwupload",
+		SegmentType:    "fmp4",
+		SegmentExt:     "m4s",
+		HLSCodecs:      "hvc1.1.6.L150.90,mp4a.40.2",
+		Optional:       true,
 	},
 	{
-		Name:        "av1",
-		InputArgs:   []string{"-vaapi_device", "/dev/dri/renderD128"},
-		VideoEnc:    "av1_vaapi",
-		AudioEnc:    "aac",
-		ScaleFilter: "format=nv12,hwupload,scale_vaapi=w=-2:h=%d",
-		SegmentType: "fmp4",
-		SegmentExt:  "m4s",
-		HLSCodecs:   "av01.0.08M.08,mp4a.40.2",
-		Optional:    true,
+		Name:           "av1",
+		InputArgs:      []string{"-vaapi_device", "/dev/dri/renderD128"},
+		VideoEnc:       "av1_vaapi",
+		AudioEnc:       "aac",
+		ScaleFilter:    "format=nv12,hwupload,scale_vaapi=w=-2:h=%d",
+		OriginalFilter: "format=nv12,hwupload",
+		SegmentType:    "fmp4",
+		SegmentExt:     "m4s",
+		HLSCodecs:      "av01.0.08M.08,mp4a.40.2",
+		Optional:       true,
 	},
 }
 
@@ -335,6 +350,10 @@ func ExtractAudio(ctx context.Context, inputPath, outputDir string, streams []Au
 		stream AudioStream
 		ok     bool
 	}
+	abitrate := cfg.AudioBitrate
+	if abitrate == "" {
+		abitrate = "128k"
+	}
 	results := make(chan result, len(streams))
 	var wg sync.WaitGroup
 	for _, s := range streams {
@@ -351,7 +370,7 @@ func ExtractAudio(ctx context.Context, inputPath, outputDir string, streams []Au
 				"-i", inputPath,
 				"-map", fmt.Sprintf("0:a:%d", stream.TypeIndex),
 				"-c:a", "aac",
-				"-b:a", "128k",
+				"-b:a", abitrate,
 				"-ac", "2",
 				"-ar", strconv.Itoa(cfg.AudioSampleRate),
 				"-vn",
@@ -576,6 +595,10 @@ func transcodeCodec(
 	if scaleFilter == "" {
 		scaleFilter = "scale=-2:%d"
 	}
+	originalFilter := c.OriginalFilter
+	if originalFilter == "" {
+		originalFilter = "null"
+	}
 
 	// Build filter_complex: decode once, split, scale each quality.
 	var fc strings.Builder
@@ -586,7 +609,7 @@ func transcodeCodec(
 	}
 	for i, q := range applicable {
 		if q.Original {
-			fmt.Fprintf(&fc, ";[v%d]null[s%d]", i, i)
+			fmt.Fprintf(&fc, ";[v%d]%s[s%d]", i, originalFilter, i)
 		} else {
 			fmt.Fprintf(&fc, ";[v%d]%s[s%d]", i, fmt.Sprintf(scaleFilter, q.Height), i)
 		}
@@ -761,11 +784,9 @@ func dynamicEncoderArgs(c *Codec, cfg EncodingConfig) []string {
 		if cfg.CPUPreset != "" {
 			args = append(args, "-preset", cfg.CPUPreset)
 		}
-		x265p := "pools=none"
 		if !cfg.SceneCut {
-			x265p += ":scenecut=0"
+			args = append(args, "-x265-params", "scenecut=0")
 		}
-		args = append(args, "-x265-params", x265p)
 	case "libaom-av1":
 		args = append(args, "-cpu-used", strconv.Itoa(cfg.AV1CPUUsed))
 	case "h264_nvenc", "hevc_nvenc", "av1_nvenc":

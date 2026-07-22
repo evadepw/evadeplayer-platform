@@ -51,6 +51,7 @@ func LoadTranscoder() (*Transcoder, error) {
 			AV1CRF:          getEnvPositiveInt("TRANSCODE_AV1_CRF", 30),
 			H264CRF:         getEnvInt("TRANSCODE_H264_CRF", 0),
 			H265CRF:         getEnvInt("TRANSCODE_H265_CRF", 0),
+			AudioBitrate:    getEnv("TRANSCODE_AUDIO_BITRATE", "128k"),
 			AudioSampleRate: getEnvPositiveInt("TRANSCODE_AUDIO_SAMPLE_RATE", 48000),
 			SceneCut:        getEnvBool("TRANSCODE_SCENE_CUT", false),
 		},
