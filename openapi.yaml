@@ -367,8 +367,9 @@ paths:
       tags: [Videos]
       summary: Upload a video file
       description: |
-        Accepts a multipart upload, stores the original in SeaweedFS, and enqueues
-        a transcoding job. Responds immediately with `202 Accepted`.
+        Accepts a multipart upload, stores the original in SeaweedFS, and creates
+        a video record in status `pending` — transcode workers claim pending
+        videos from PostgreSQL. Responds immediately with `202 Accepted`.
 
         **Supported formats:** `.mp4`, `.mkv`, `.mov`, `.avi`, `.webm`, `.m4v`.
 
@@ -398,7 +399,7 @@ paths:
                     Example content: `{"intro":{"start":0,"end":15},"credits":{"start":3540,"end":3600}}`
       responses:
         '202':
-          description: Accepted — transcoding job queued
+          description: Accepted — video queued for transcoding
           content:
             application/json:
               schema:
@@ -422,7 +423,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '500':
-          description: Storage or queue error
+          description: Storage or database error
           content:
             application/json:
               schema:
@@ -741,12 +742,12 @@ paths:
         native HLS Image Stream (`EXT-X-IMAGE-STREAM-INF`).
 
         Each cue maps a time interval to a tile region within the sprite sheet at
-        `/thumbnails/{videoID}/sprite.jpg`. The sprite is generated during transcoding
-        with one frame per `SPRITE_INTERVAL_SECONDS` (default 10 s), tiled in a grid of
-        `SPRITE_COLUMNS` columns (default 10) at `SPRITE_WIDTH`×`SPRITE_HEIGHT` px
-        (default 320×180) per tile.
+        `/thumbnails/{videoID}/sprite.jpg`. Cues are computed from the sprite
+        geometry the transcoder recorded for this exact video (interval, tile
+        size, column count), so coordinates always match the generated sprite.
 
-        Returns `404` if the video does not exist or has not yet reached `status=ready`.
+        Returns `404` if the video does not exist, has not yet reached
+        `status=ready`, or has no stored storyboard (sprite generation failed).
 
         Public when `READ_PUBLIC=true` (default); requires `X-Service-Key`
         when `READ_PUBLIC=false`.
@@ -891,7 +892,9 @@ paths:
           schema:
             type: string
           description: |
-            Relative path within the HLS tree.
+            Relative playlist path within the HLS tree — must end in `.m3u8`
+            and contain plain path segments only (no `..`, escapes or query
+            smuggling; anything else is rejected with `400`).
             Examples: `master.m3u8`, `h264/360p/index.m3u8`, `audio/0/index.m3u8`, `images/index.m3u8`
         - name: token
           in: query
@@ -940,8 +943,20 @@ paths:
             application/vnd.apple.mpegurl:
               schema:
                 type: string
+        '400':
+          description: Malformed video id or manifest path
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '401':
           description: Token missing, invalid, or expired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Manifest not found
           content:
             application/json:
               schema:

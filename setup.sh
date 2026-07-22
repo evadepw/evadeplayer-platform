@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2059  # color codes are deliberately embedded in printf
+#                             format strings; all formats are internal literals.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
