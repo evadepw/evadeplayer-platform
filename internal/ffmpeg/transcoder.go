@@ -677,8 +677,8 @@ func transcodeCodec(
 		cmd.Stderr = io.MultiWriter(&stderrBuf, os.Stderr, pw)
 
 		if err := cmd.Start(); err != nil {
-			pw.Close()
-			pr.Close()
+			_ = pw.Close()
+			_ = pr.Close()
 			return nil, fmt.Errorf("ffmpeg start: %w", err)
 		}
 
@@ -699,7 +699,7 @@ func transcodeCodec(
 		}()
 
 		runErr = cmd.Wait()
-		pw.Close()
+		_ = pw.Close()
 		parseWg.Wait()
 	} else {
 		cmd.Stderr = io.MultiWriter(&stderrBuf, os.Stderr)

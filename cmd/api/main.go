@@ -68,10 +68,10 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		if err := db.Ping(r.Context()); err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte(`{"status":"unhealthy"}`))
+			_, _ = w.Write([]byte(`{"status":"unhealthy"}`))
 			return
 		}
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
 	mux.HandleFunc("GET /openapi.yaml", func(w http.ResponseWriter, r *http.Request) {

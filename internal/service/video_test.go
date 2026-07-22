@@ -17,7 +17,9 @@ const testHLSSecret = "hls-secret-32-chars-minimum-ok!!"
 
 func TestComputeHLSToken_Deterministic(t *testing.T) {
 	s := []byte(testHLSSecret)
-	if service.ComputeHLSToken(s, "vid", "100") != service.ComputeHLSToken(s, "vid", "100") {
+	first := service.ComputeHLSToken(s, "vid", "100")
+	second := service.ComputeHLSToken(s, "vid", "100")
+	if first != second {
 		t.Error("must be deterministic")
 	}
 }
