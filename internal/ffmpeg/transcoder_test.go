@@ -32,7 +32,7 @@ func TestWriteMasterManifest_ContainsQualities(t *testing.T) {
 	dir := t.TempDir()
 	variants := makeVariants(0, []string{"360p", "720p", "1080p"}) // h264
 
-	if err := WriteMasterManifest(dir, variants, nil, nil); err != nil {
+	if err := WriteMasterManifest(dir, MasterParams{Variants: variants}); err != nil {
 		t.Fatalf("WriteMasterManifest: %v", err)
 	}
 
@@ -60,7 +60,7 @@ func TestWriteMasterManifest_MultiCodec(t *testing.T) {
 		variants = append(variants, makeVariants(ci, []string{"720p"})...)
 	}
 
-	if err := WriteMasterManifest(dir, variants, nil, nil); err != nil {
+	if err := WriteMasterManifest(dir, MasterParams{Variants: variants}); err != nil {
 		t.Fatalf("WriteMasterManifest: %v", err)
 	}
 	data, _ := os.ReadFile(filepath.Join(dir, "master.m3u8"))
@@ -82,7 +82,7 @@ func TestWriteMasterManifest_MultiCodec(t *testing.T) {
 func TestWriteMasterManifest_ContainsBandwidth(t *testing.T) {
 	dir := t.TempDir()
 	variants := makeVariants(0, []string{"720p"})
-	if err := WriteMasterManifest(dir, variants, nil, nil); err != nil {
+	if err := WriteMasterManifest(dir, MasterParams{Variants: variants}); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(filepath.Join(dir, "master.m3u8"))
@@ -101,7 +101,7 @@ func TestWriteMasterManifest_ContainsImageStreamWhenPresent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := WriteMasterManifest(dir, makeVariants(0, []string{"720p"}), nil, nil); err != nil {
+	if err := WriteMasterManifest(dir, MasterParams{Variants: makeVariants(0, []string{"720p"})}); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(filepath.Join(dir, "master.m3u8"))
@@ -129,7 +129,7 @@ func TestWriteMasterManifest_UsesImageStreamConfig(t *testing.T) {
 	cfg.SpriteHeight = 270
 	cfg.ImageStreamBandwidth = 70000
 
-	if err := WriteMasterManifestWithConfig(dir, makeVariants(0, []string{"720p"}), nil, nil, cfg); err != nil {
+	if err := WriteMasterManifest(dir, MasterParams{Variants: makeVariants(0, []string{"720p"}), Thumbnail: cfg}); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(filepath.Join(dir, "master.m3u8"))
@@ -196,7 +196,7 @@ func TestWriteImageStreamManifest_UsesConfig(t *testing.T) {
 
 func TestWriteMasterManifest_EmptyVariants(t *testing.T) {
 	dir := t.TempDir()
-	if err := WriteMasterManifest(dir, nil, nil, nil); err != nil {
+	if err := WriteMasterManifest(dir, MasterParams{}); err != nil {
 		t.Fatalf("unexpected error for empty variants: %v", err)
 	}
 	data, _ := os.ReadFile(filepath.Join(dir, "master.m3u8"))
@@ -346,7 +346,7 @@ func TestBuildQualities_OriginalResolvesInManifest(t *testing.T) {
 		}
 	}
 	variants := []Variant{{Codec: &Codecs[0], Quality: &qs[0]}}
-	if err := WriteMasterManifest(dir, variants, nil, nil); err != nil {
+	if err := WriteMasterManifest(dir, MasterParams{Variants: variants}); err != nil {
 		t.Fatalf("WriteMasterManifest: %v", err)
 	}
 	data, _ := os.ReadFile(filepath.Join(dir, "master.m3u8"))
@@ -356,5 +356,177 @@ func TestBuildQualities_OriginalResolvesInManifest(t *testing.T) {
 	}
 	if !strings.Contains(content, "h264/original/index.m3u8") {
 		t.Errorf("manifest must reference original quality path:\n%s", content)
+	}
+}
+
+// --- RFC 8216 conformance ---
+
+func TestWriteMasterManifest_IndependentSegmentsAndClosedCaptions(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteMasterManifest(dir, MasterParams{Variants: makeVariants(0, []string{"720p"})}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "master.m3u8"))
+	content := string(data)
+	if !strings.Contains(content, "#EXT-X-INDEPENDENT-SEGMENTS\n") {
+		t.Error("master must declare EXT-X-INDEPENDENT-SEGMENTS")
+	}
+	if !strings.Contains(content, "CLOSED-CAPTIONS=NONE") {
+		t.Error("variants must declare CLOSED-CAPTIONS=NONE")
+	}
+}
+
+func TestWriteMasterManifest_FrameRate(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteMasterManifest(dir, MasterParams{
+		Variants:  makeVariants(0, []string{"720p"}),
+		FrameRate: 23.976,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "master.m3u8"))
+	if !strings.Contains(string(data), "FRAME-RATE=23.976") {
+		t.Errorf("expected FRAME-RATE attribute:\n%s", data)
+	}
+}
+
+func TestWriteMasterManifest_UniqueRenditionNames(t *testing.T) {
+	dir := t.TempDir()
+	audio := []AudioStream{
+		{TypeIndex: 0, Language: "eng"},
+		{TypeIndex: 1, Language: "eng"},
+	}
+	if err := WriteMasterManifest(dir, MasterParams{
+		Variants: makeVariants(0, []string{"720p"}),
+		Audio:    audio,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "master.m3u8"))
+	content := string(data)
+	if !strings.Contains(content, `NAME="eng"`) || !strings.Contains(content, `NAME="eng 2"`) {
+		t.Errorf("duplicate-language renditions must get distinct NAMEs:\n%s", content)
+	}
+	// The second rendition of the same language must not be AUTOSELECT=YES (§4.3.4.1.1).
+	if !strings.Contains(content, "AUTOSELECT=NO") {
+		t.Errorf("second same-language rendition must be AUTOSELECT=NO:\n%s", content)
+	}
+}
+
+func TestMeasuredBandwidth(t *testing.T) {
+	dir := t.TempDir()
+	// init 1000 bytes; two 4-second segments of 4000 and 8000 bytes.
+	if err := os.WriteFile(filepath.Join(dir, "init.mp4"), make([]byte, 1000), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "00000.m4s"), make([]byte, 4000), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "00001.m4s"), make([]byte, 8000), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	playlist := "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:4\n" +
+		"#EXT-X-MAP:URI=\"init.mp4\"\n" +
+		"#EXTINF:4.000000,\n00000.m4s\n" +
+		"#EXTINF:4.000000,\n00001.m4s\n" +
+		"#EXT-X-ENDLIST\n"
+	path := filepath.Join(dir, "index.m3u8")
+	if err := os.WriteFile(path, []byte(playlist), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	peak, avg, ok := measuredBandwidth(path)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if peak != 8000*8/4 {
+		t.Errorf("peak = %d, want %d", peak, 8000*8/4)
+	}
+	if avg != 13000*8/8 {
+		t.Errorf("avg = %d, want %d", avg, 13000*8/8)
+	}
+}
+
+func TestMeasuredBandwidth_MissingSegment(t *testing.T) {
+	dir := t.TempDir()
+	playlist := "#EXTM3U\n#EXTINF:4.0,\nmissing.m4s\n#EXT-X-ENDLIST\n"
+	path := filepath.Join(dir, "index.m3u8")
+	if err := os.WriteFile(path, []byte(playlist), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := measuredBandwidth(path); ok {
+		t.Error("expected ok=false for missing segment")
+	}
+}
+
+func TestWriteMasterManifest_MeasuredBandwidth(t *testing.T) {
+	dir := t.TempDir()
+	qDir := filepath.Join(dir, "h264", "720p")
+	if err := os.MkdirAll(qDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(qDir, "00000.m4s"), make([]byte, 5000), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	playlist := "#EXTM3U\n#EXTINF:4.0,\n00000.m4s\n#EXT-X-ENDLIST\n"
+	if err := os.WriteFile(filepath.Join(qDir, "index.m3u8"), []byte(playlist), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteMasterManifest(dir, MasterParams{Variants: makeVariants(0, []string{"720p"})}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "master.m3u8"))
+	content := string(data)
+	if !strings.Contains(content, "BANDWIDTH=10000,") {
+		t.Errorf("expected measured BANDWIDTH=10000 (5000 B / 4 s):\n%s", content)
+	}
+	if !strings.Contains(content, "AVERAGE-BANDWIDTH=10000") {
+		t.Errorf("expected AVERAGE-BANDWIDTH from measurement:\n%s", content)
+	}
+}
+
+func TestVariantCodecs_Levels(t *testing.T) {
+	h265 := &Codecs[1]
+	av1 := &Codecs[2]
+	cases := []struct {
+		codec *Codec
+		w, h  int
+		fps   float64
+		want  string
+	}{
+		{h265, 1280, 720, 30, "hvc1.1.6.L93.90,mp4a.40.2"},
+		{h265, 1920, 1080, 30, "hvc1.1.6.L120.90,mp4a.40.2"},
+		{h265, 1920, 1080, 60, "hvc1.1.6.L123.90,mp4a.40.2"},
+		{h265, 3840, 2160, 30, "hvc1.1.6.L150.90,mp4a.40.2"},
+		{h265, 3840, 2160, 60, "hvc1.1.6.L153.90,mp4a.40.2"},
+		{av1, 1920, 1080, 30, "av01.0.08M.08,mp4a.40.2"},
+		{av1, 3840, 2160, 30, "av01.0.12M.08,mp4a.40.2"},
+	}
+	for _, c := range cases {
+		v := Variant{Codec: c.codec, Quality: &Quality{Width: c.w, Height: c.h}}
+		if got := variantCodecs(v, c.fps); got != c.want {
+			t.Errorf("variantCodecs(%s %dx%d@%.0f) = %q, want %q", c.codec.Name, c.w, c.h, c.fps, got, c.want)
+		}
+	}
+}
+
+func TestSortVariants(t *testing.T) {
+	codecs := []Codec{{Name: "h264"}, {Name: "av1"}}
+	qualities := []Quality{{Name: "360p"}, {Name: "1080p"}}
+	variants := []Variant{
+		{Codec: &codecs[1], Quality: &qualities[1]},
+		{Codec: &codecs[0], Quality: &qualities[1]},
+		{Codec: &codecs[1], Quality: &qualities[0]},
+		{Codec: &codecs[0], Quality: &qualities[0]},
+	}
+	sortVariants(variants, codecs, qualities)
+	got := ""
+	for _, v := range variants {
+		got += v.Codec.Name + "/" + v.Quality.Name + " "
+	}
+	want := "h264/360p h264/1080p av1/360p av1/1080p "
+	if got != want {
+		t.Errorf("order = %q, want %q", got, want)
 	}
 }

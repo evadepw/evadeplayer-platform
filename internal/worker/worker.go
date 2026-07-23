@@ -284,7 +284,13 @@ func (w *Worker) process(ctx context.Context, job *repository.Job) error {
 	}
 	w.setProgress(ctx, videoID, 85)
 
-	if err := ffmpeg.WriteMasterManifestWithConfig(hlsDir, variants, extractedAudio, extractedSubs, w.cfg.Thumbnail); err != nil {
+	if err := ffmpeg.WriteMasterManifest(hlsDir, ffmpeg.MasterParams{
+		Variants:  variants,
+		Audio:     extractedAudio,
+		Subtitles: extractedSubs,
+		Thumbnail: w.cfg.Thumbnail,
+		FrameRate: probe.FrameRate,
+	}); err != nil {
 		return fmt.Errorf("write master manifest: %w", err)
 	}
 

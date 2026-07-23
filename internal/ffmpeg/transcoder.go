@@ -569,7 +569,29 @@ func TranscodeHLS(
 		}
 		produced = append(produced, r.variants...)
 	}
+	sortVariants(produced, codecs, qualities)
 	return produced, nil
+}
+
+// sortVariants orders variants by configured codec order, then configured quality
+// order. Goroutine completion order must not leak into the master playlist: its
+// first variant is what players start with, so the first configured codec and
+// quality (lowest rung by default) comes first for fast, universal startup.
+func sortVariants(variants []Variant, codecs []Codec, qualities []Quality) {
+	codecIdx := make(map[string]int, len(codecs))
+	for i := range codecs {
+		codecIdx[codecs[i].Name] = i
+	}
+	qualityIdx := make(map[string]int, len(qualities))
+	for i := range qualities {
+		qualityIdx[qualities[i].Name] = i
+	}
+	sort.Slice(variants, func(i, j int) bool {
+		if a, b := codecIdx[variants[i].Codec.Name], codecIdx[variants[j].Codec.Name]; a != b {
+			return a < b
+		}
+		return qualityIdx[variants[i].Quality.Name] < qualityIdx[variants[j].Quality.Name]
+	})
 }
 
 func transcodeCodec(
@@ -889,45 +911,79 @@ func lastLines(s string, maxLines int) string {
 	return strings.Join(lines, "\n")
 }
 
-// WriteMasterManifest writes the master HLS playlist referencing all codec/quality variants,
-// alternate audio renditions, and subtitle tracks.
-func WriteMasterManifest(outputDir string, variants []Variant, audio []AudioStream, subtitles []SubtitleStream) error {
-	return WriteMasterManifestWithConfig(outputDir, variants, audio, subtitles, DefaultThumbnailConfig())
+// MasterParams describes everything referenced by the master playlist.
+type MasterParams struct {
+	Variants  []Variant
+	Audio     []AudioStream
+	Subtitles []SubtitleStream
+	Thumbnail ThumbnailConfig // zero value = defaults
+	FrameRate float64         // source frame rate; 0 = unknown (omits FRAME-RATE, assumes 30 for levels)
 }
 
-func WriteMasterManifestWithConfig(outputDir string, variants []Variant, audio []AudioStream, subtitles []SubtitleStream, thumbnailCfg ThumbnailConfig) error {
-	thumbnailCfg = thumbnailCfg.WithDefaults()
+// nameSet hands out NAME values that are unique within one rendition group,
+// as RFC 8216 §4.3.4.1 requires.
+type nameSet map[string]int
+
+func (s nameSet) unique(base string) string {
+	s[base]++
+	if s[base] == 1 {
+		return base
+	}
+	return fmt.Sprintf("%s %d", base, s[base])
+}
+
+// WriteMasterManifest writes the master HLS playlist referencing all codec/quality
+// variants, alternate audio renditions, and subtitle tracks. When the variant media
+// playlists exist under outputDir, BANDWIDTH and AVERAGE-BANDWIDTH are measured from
+// the encoded segments as RFC 8216 requires; otherwise ladder estimates are used.
+func WriteMasterManifest(outputDir string, p MasterParams) error {
+	thumbnailCfg := p.Thumbnail.WithDefaults()
 	var sb strings.Builder
 	sb.WriteString("#EXTM3U\n")
-	sb.WriteString("#EXT-X-VERSION:6\n\n")
+	sb.WriteString("#EXT-X-VERSION:6\n")
+	sb.WriteString("#EXT-X-INDEPENDENT-SEGMENTS\n\n")
 
-	for i, a := range audio {
+	audioNames := nameSet{}
+	audioLangs := map[string]bool{}
+	for i, a := range p.Audio {
 		lang := a.Language
 		if lang == "" {
 			lang = "und"
 		}
-		name := mediaDisplayName(a.Title, a.Language, i)
 		def := "NO"
 		if i == 0 {
 			def = "YES"
 		}
-		fmt.Fprintf(&sb, "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",LANGUAGE=\"%s\",NAME=\"%s\",DEFAULT=%s,AUTOSELECT=YES,URI=\"audio/%d/index.m3u8\"\n",
-			lang, name, def, a.TypeIndex)
+		// Renditions with AUTOSELECT=YES must be distinguishable by language
+		// (RFC 8216 §4.3.4.1.1), so only the first track per language gets it.
+		autoselect := "NO"
+		if !audioLangs[lang] || i == 0 {
+			audioLangs[lang] = true
+			autoselect = "YES"
+		}
+		fmt.Fprintf(&sb, "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",LANGUAGE=\"%s\",NAME=\"%s\",DEFAULT=%s,AUTOSELECT=%s,URI=\"audio/%d/index.m3u8\"\n",
+			lang, audioNames.unique(mediaDisplayName(a.Title, a.Language, i)), def, autoselect, a.TypeIndex)
 	}
-	if len(audio) > 0 {
+	if len(p.Audio) > 0 {
 		sb.WriteString("\n")
 	}
 
-	for i, s := range subtitles {
-		lang := s.Language
+	subNames := nameSet{}
+	subLangs := map[string]bool{}
+	for i, t := range p.Subtitles {
+		lang := t.Language
 		if lang == "" {
 			lang = "und"
 		}
-		name := mediaDisplayName(s.Title, s.Language, i)
-		fmt.Fprintf(&sb, "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",LANGUAGE=\"%s\",NAME=\"%s\",DEFAULT=NO,FORCED=NO,URI=\"subs/%d/index.m3u8\"\n",
-			lang, name, s.TypeIndex)
+		autoselect := "NO"
+		if !subLangs[lang] {
+			subLangs[lang] = true
+			autoselect = "YES"
+		}
+		fmt.Fprintf(&sb, "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",LANGUAGE=\"%s\",NAME=\"%s\",DEFAULT=NO,AUTOSELECT=%s,FORCED=NO,URI=\"subs/%d/index.m3u8\"\n",
+			lang, subNames.unique(mediaDisplayName(t.Title, t.Language, i)), autoselect, t.TypeIndex)
 	}
-	if len(subtitles) > 0 {
+	if len(p.Subtitles) > 0 {
 		sb.WriteString("\n")
 	}
 
@@ -936,31 +992,209 @@ func WriteMasterManifestWithConfig(outputDir string, variants []Variant, audio [
 			thumbnailCfg.ImageStreamBandwidth, thumbnailCfg.SpriteWidth, thumbnailCfg.SpriteHeight)
 	}
 
-	for _, v := range variants {
-		videoBw := bitrateKbpsToInt(v.Quality.Bitrate)
-		if videoBw == 0 {
-			videoBw = bitrateEstimateForHeight(v.Quality.Height)
+	// With demuxed audio the variant BANDWIDTH must cover video plus the audio
+	// rendition the player will fetch; use the heaviest rendition as the bound.
+	audioPeak, audioAvg := 0, 0
+	for _, a := range p.Audio {
+		if pk, av, ok := measuredBandwidth(filepath.Join(outputDir, "audio", strconv.Itoa(a.TypeIndex), "index.m3u8")); ok {
+			if pk > audioPeak {
+				audioPeak = pk
+			}
+			if av > audioAvg {
+				audioAvg = av
+			}
 		}
-		audioBw := bitrateKbpsToInt(v.Quality.ABitrate)
-		var bw int
-		if v.Codec.VideoEnc == "libaom-av1" {
-			// AV1 CRF mode: estimate ~40% of equivalent H.264 bitrate.
-			bw = videoBw*400 + audioBw*1000
-		} else {
-			bw = (videoBw + audioBw) * 1000
+	}
+
+	for _, v := range p.Variants {
+		bw, avgBw := variantBandwidth(outputDir, v, audioPeak, audioAvg)
+		line := fmt.Sprintf("#EXT-X-STREAM-INF:BANDWIDTH=%d", bw)
+		if avgBw > 0 {
+			line += fmt.Sprintf(",AVERAGE-BANDWIDTH=%d", avgBw)
 		}
-		line := fmt.Sprintf("#EXT-X-STREAM-INF:BANDWIDTH=%d,RESOLUTION=%s,CODECS=\"%s\",NAME=\"%s %s\"",
-			bw, resolutionStr(v.Quality), v.Codec.HLSCodecs, v.Quality.Name, v.Codec.Name)
-		if len(audio) > 0 {
+		line += fmt.Sprintf(",RESOLUTION=%s,CODECS=\"%s\"", resolutionStr(v.Quality), variantCodecs(v, p.FrameRate))
+		if p.FrameRate > 0 {
+			line += fmt.Sprintf(",FRAME-RATE=%.3f", p.FrameRate)
+		}
+		if len(p.Audio) > 0 {
 			line += ",AUDIO=\"audio\""
 		}
-		if len(subtitles) > 0 {
+		if len(p.Subtitles) > 0 {
 			line += ",SUBTITLES=\"subs\""
 		}
+		line += ",CLOSED-CAPTIONS=NONE"
+		// NAME is not an RFC 8216 STREAM-INF attribute, but hls.js reads it for
+		// quality labels; conforming clients must ignore unknown attributes.
+		line += fmt.Sprintf(",NAME=\"%s %s\"", v.Quality.Name, v.Codec.Name)
 		fmt.Fprintf(&sb, "%s\n%s/%s/index.m3u8\n\n", line, v.Codec.Name, v.Quality.Name)
 	}
 
 	return os.WriteFile(filepath.Join(outputDir, "master.m3u8"), []byte(sb.String()), 0o644)
+}
+
+// variantBandwidth returns the BANDWIDTH/AVERAGE-BANDWIDTH pair for a variant.
+// Measured values from the encoded output are preferred; the fallback estimate
+// (used when segments are not on disk) reports no average.
+func variantBandwidth(outputDir string, v Variant, audioPeak, audioAvg int) (bw, avgBw int) {
+	if peak, avg, ok := measuredBandwidth(filepath.Join(outputDir, v.Codec.Name, v.Quality.Name, "index.m3u8")); ok {
+		return peak + audioPeak, avg + audioAvg
+	}
+	videoBw := bitrateKbpsToInt(v.Quality.Bitrate)
+	if videoBw == 0 {
+		videoBw = bitrateEstimateForHeight(v.Quality.Height)
+	}
+	audioBw := bitrateKbpsToInt(v.Quality.ABitrate)
+	if v.Codec.VideoEnc == "libaom-av1" {
+		// AV1 CRF mode: estimate ~40% of equivalent H.264 bitrate.
+		return videoBw*400 + audioBw*1000, 0
+	}
+	return (videoBw + audioBw) * 1000, 0
+}
+
+// measuredBandwidth computes peak and average bits per second of a media
+// playlist from the segment files next to it. ok is false when the playlist or
+// any referenced segment cannot be read.
+func measuredBandwidth(playlistPath string) (peak, avg int, ok bool) {
+	data, err := os.ReadFile(playlistPath)
+	if err != nil {
+		return 0, 0, false
+	}
+	dir := filepath.Dir(playlistPath)
+	segDur := -1.0
+	var totalBytes int64
+	var totalDur, peakBps float64
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "#EXTINF:"):
+			val := strings.TrimPrefix(line, "#EXTINF:")
+			if i := strings.Index(val, ","); i >= 0 {
+				val = val[:i]
+			}
+			d, err := strconv.ParseFloat(val, 64)
+			if err != nil {
+				return 0, 0, false
+			}
+			segDur = d
+		case strings.HasPrefix(line, "#EXT-X-MAP:"):
+			uri := attrValue(line, "URI")
+			if uri == "" {
+				return 0, 0, false
+			}
+			info, err := os.Stat(filepath.Join(dir, uri))
+			if err != nil {
+				return 0, 0, false
+			}
+			totalBytes += info.Size()
+		case line == "" || strings.HasPrefix(line, "#"):
+		default:
+			info, err := os.Stat(filepath.Join(dir, line))
+			if err != nil {
+				return 0, 0, false
+			}
+			totalBytes += info.Size()
+			if segDur > 0 {
+				if bps := float64(info.Size()) * 8 / segDur; bps > peakBps {
+					peakBps = bps
+				}
+				totalDur += segDur
+			}
+			segDur = -1
+		}
+	}
+	if totalDur <= 0 {
+		return 0, 0, false
+	}
+	return int(math.Ceil(peakBps)), int(math.Ceil(float64(totalBytes) * 8 / totalDur)), true
+}
+
+// attrValue extracts a quoted attribute value (NAME="...") from a playlist tag line.
+func attrValue(line, name string) string {
+	key := name + `="`
+	i := strings.Index(line, key)
+	if i < 0 {
+		return ""
+	}
+	rest := line[i+len(key):]
+	j := strings.IndexByte(rest, '"')
+	if j < 0 {
+		return ""
+	}
+	return rest[:j]
+}
+
+// hevcLevels maps HEVC levels (Main tier) to their max luma picture size and
+// max luma sample rate, per ITU-T H.265 table A.8. The CODECS level must not
+// understate the bitstream or players will refuse variants they could play.
+var hevcLevels = []struct {
+	level int
+	maxPS int64
+	maxSR int64
+}{
+	{90, 552960, 16588800},     // 3.0
+	{93, 983040, 33177600},     // 3.1
+	{120, 2228224, 66846720},   // 4.0
+	{123, 2228224, 133693440},  // 4.1
+	{150, 8912896, 267386880},  // 5.0
+	{153, 8912896, 534773760},  // 5.1
+	{156, 8912896, 1069547520}, // 5.2
+}
+
+// av1Levels maps AV1 seq_level_idx to max picture size and max display rate,
+// per the AV1 spec annex A.3.
+var av1Levels = []struct {
+	idx   int
+	maxPS int64
+	maxSR int64
+}{
+	{0, 147456, 4423680},     // 2.0
+	{1, 278784, 8363520},     // 2.1
+	{4, 665856, 19975680},    // 3.0
+	{5, 1065024, 31950720},   // 3.1
+	{8, 2359296, 70778880},   // 4.0
+	{9, 2359296, 141557760},  // 4.1
+	{12, 8912896, 267386880}, // 5.0
+	{13, 8912896, 534773760}, // 5.1
+}
+
+// variantCodecs returns the CODECS attribute for a variant. H.264 is fixed at
+// High@5.1 because the encoder is forced to that level; HEVC and AV1 levels are
+// derived from the variant resolution and frame rate, matching what the
+// encoders signal automatically.
+func variantCodecs(v Variant, frameRate float64) string {
+	w := v.Quality.Width
+	h := v.Quality.Height
+	if w == 0 {
+		w = h * 16 / 9
+	}
+	fps := frameRate
+	if fps <= 0 {
+		fps = 30
+	}
+	ps := int64(w) * int64(h)
+	sr := int64(float64(ps) * fps)
+	switch v.Codec.Name {
+	case "h265":
+		level := hevcLevels[len(hevcLevels)-1].level
+		for _, l := range hevcLevels {
+			if ps <= l.maxPS && sr <= l.maxSR {
+				level = l.level
+				break
+			}
+		}
+		return fmt.Sprintf("hvc1.1.6.L%d.90,mp4a.40.2", level)
+	case "av1":
+		idx := av1Levels[len(av1Levels)-1].idx
+		for _, l := range av1Levels {
+			if ps <= l.maxPS && sr <= l.maxSR {
+				idx = l.idx
+				break
+			}
+		}
+		return fmt.Sprintf("av01.0.%02dM.08,mp4a.40.2", idx)
+	default:
+		return v.Codec.HLSCodecs
+	}
 }
 
 func fileExists(path string) bool {
