@@ -11,7 +11,7 @@ Upload videos, transcode them to HLS, and get ready-to-use, signed playback URLs
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 [![OpenAPI](https://img.shields.io/badge/OpenAPI-3.1-6BA539?logo=openapiinitiative&logoColor=white)](openapi.yaml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Status: WIP](https://img.shields.io/badge/status-WIP-orange.svg)](#project-status)
+[![Status: stable](https://img.shields.io/badge/status-stable-brightgreen.svg)](#project-status)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
 
 [Quick Start](#quick-start) ·
@@ -25,10 +25,9 @@ Upload videos, transcode them to HLS, and get ready-to-use, signed playback URLs
 
 ---
 
-> [!WARNING]
-> **Project status: WIP.** EvadePlayer is under active development. The API and
-> configuration are still subject to change before a tagged `v1.0` release.
-> It is usable today, but pin to a commit if you depend on it.
+> [!NOTE]
+> **Stable — `v1.0`.** The HTTP API and configuration surface are considered
+> stable; breaking changes will bump the major version. Safe to pin to a tag.
 
 ## About
 
@@ -292,9 +291,9 @@ acceleration and sets `TRANSCODE_ACCEL` accordingly.
 
 ## Project status
 
-EvadePlayer is **work in progress**. The core pipeline is functional and covered by
-Go tests, lint, and image builds run in CI on every push, but interfaces may change
-before a stable release.
+EvadePlayer is **stable as of `v1.0`**. The core pipeline is covered by Go tests,
+lint, and image builds run in CI on every push, and the HTTP API is frozen —
+breaking changes will bump the major version.
 
 ### Roadmap
 
@@ -305,7 +304,7 @@ before a stable release.
 - [x] OpenAPI 3.1 spec + Swagger UI
 - [x] Crash-safe PostgreSQL job queue with retries
 - [x] One-command worker deployment, any number of machines
-- [ ] Tagged `v1.0` with a frozen API
+- [x] Tagged `v1.0` with a frozen API
 - [ ] Webhooks / callbacks on transcode completion
 - [ ] Metrics & observability endpoints
 - [ ] Helm chart for Kubernetes deployments
