@@ -50,6 +50,8 @@ type EncodingConfig struct {
 	NvidiaPreset    string // nvenc preset p1–p7
 	AV1CPUUsed      int    // libaom-av1 cpu-used 0–8 (0=best quality, 8=fastest)
 	AV1CRF          int    // libaom-av1 CRF value 0–63
+	AV1Tiles        string // libaom-av1 tile layout "COLSxROWS" (more tiles = more threads); "" disables
+	AV1RowMT        bool   // libaom-av1 row-based multithreading
 	H264CRF         int    // libx264 CRF 0–51; 0=bitrate mode. Typical: 20–24
 	H265CRF         int    // libx265 CRF 0–51; 0=bitrate mode. Typical: 24–28
 	AudioBitrate    string // AAC bitrate for separate audio renditions (e.g. "128k")
@@ -63,8 +65,10 @@ func DefaultEncodingConfig() EncodingConfig {
 	return EncodingConfig{
 		CPUPreset:       "slow",
 		NvidiaPreset:    "p5",
-		AV1CPUUsed:      4,
+		AV1CPUUsed:      6,
 		AV1CRF:          30,
+		AV1Tiles:        "2x2",
+		AV1RowMT:        true,
 		H264CRF:         0,
 		H265CRF:         0,
 		AudioBitrate:    "128k",
@@ -119,13 +123,9 @@ var Codecs = []Codec{
 		Optional:       true,
 	},
 	{
-		Name:     "av1",
-		VideoEnc: "libaom-av1",
-		AudioEnc: "aac",
-		ExtraArgs: []string{
-			"-row-mt", "1",
-			"-tiles", "2x2",
-		},
+		Name:           "av1",
+		VideoEnc:       "libaom-av1",
+		AudioEnc:       "aac",
 		ScaleFilter:    "scale=-2:%d:flags=lanczos,format=yuv420p",
 		OriginalFilter: "format=yuv420p",
 		SegmentType:    "fmp4",
@@ -703,7 +703,14 @@ func transcodeCodec(
 			}
 		}
 
+		// Force an IDR exactly at every segment boundary so all variants and
+		// codecs share identical segment start times (clean ABR switching, and
+		// required by Apple's HLS authoring spec). This is independent of scene-cut
+		// detection — relying on -g/scenecut alone left segments misaligned because
+		// libx265 ignored scenecut=0. Extra scene-cut keyframes (when enabled) then
+		// fall inside segments and only improve seeking.
 		args = append(args,
+			"-force_key_frames", fmt.Sprintf("expr:gte(t,n_forced*%d)", hlsSegmentSeconds),
 			"-g", strconv.Itoa(gopSize),
 			"-keyint_min", strconv.Itoa(gopSize),
 		)
@@ -835,6 +842,12 @@ func dynamicEncoderArgs(c *Codec, cfg EncodingConfig) []string {
 		}
 	case "libaom-av1":
 		args = append(args, "-cpu-used", strconv.Itoa(cfg.AV1CPUUsed))
+		if cfg.AV1RowMT {
+			args = append(args, "-row-mt", "1")
+		}
+		if cfg.AV1Tiles != "" {
+			args = append(args, "-tiles", cfg.AV1Tiles)
+		}
 	case "h264_nvenc", "hevc_nvenc", "av1_nvenc":
 		if cfg.NvidiaPreset != "" {
 			args = append(args, "-preset", cfg.NvidiaPreset)

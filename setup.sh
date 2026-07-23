@@ -515,7 +515,9 @@ nvidia_preset="$(default_for TRANSCODE_NVIDIA_PRESET     p5)"
 h264_crf="$(default_for      TRANSCODE_H264_CRF          0)"
 h265_crf="$(default_for      TRANSCODE_H265_CRF          0)"
 av1_crf="$(default_for       TRANSCODE_AV1_CRF           30)"
-av1_cpu="$(default_for       TRANSCODE_AV1_CPU_USED      4)"
+av1_cpu="$(default_for       TRANSCODE_AV1_CPU_USED      6)"
+av1_tiles="$(default_for     TRANSCODE_AV1_TILES         2x2)"
+av1_row_mt="$(default_for    TRANSCODE_AV1_ROW_MT        true)"
 audio_rate="$(default_for    TRANSCODE_AUDIO_SAMPLE_RATE 48000)"
 scene_cut="$(default_for     TRANSCODE_SCENE_CUT         false)"
 
@@ -581,6 +583,9 @@ if ask_yn "Configure encoding quality settings" "n"; then
     av1_crf="$(ask TRANSCODE_AV1_CRF      "AV1 CRF       (28=excellent  30=good  32=balanced  36=small)" "$av1_crf")"
     info "Lower number = better compression, slower encode."
     av1_cpu="$(ask TRANSCODE_AV1_CPU_USED "AV1 cpu-used  (4=good quality  6=faster  8=fastest)" "$av1_cpu")"
+    info "AV1 is single-threaded by nature; tiles add parallelism on many-core CPUs"
+    info "(more tiles = faster, slightly larger files). e.g. 2x2, 4x2. Empty = off."
+    av1_tiles="$(ask TRANSCODE_AV1_TILES   "AV1 tiles     (COLSxROWS, e.g. 2x2 / 4x2)" "$av1_tiles")"
   fi
 
   echo
@@ -664,6 +669,11 @@ TRANSCODE_H265_CRF=$h265_crf
 # AV1 (libaom-av1, cpu accel only): CRF range 0-63. cpu-used 0=best quality, 8=fastest.
 TRANSCODE_AV1_CRF=$av1_crf
 TRANSCODE_AV1_CPU_USED=$av1_cpu
+# AV1 tile layout COLSxROWS — more tiles = more parallel threads (faster on many
+# cores), slightly worse compression. Empty disables tiling. e.g. 2x2, 4x2.
+TRANSCODE_AV1_TILES=$av1_tiles
+# AV1 row-based multithreading (extra parallelism within each tile).
+TRANSCODE_AV1_ROW_MT=$av1_row_mt
 # Audio sample rate in Hz. 48000 = standard for video. 44100 = CD standard.
 TRANSCODE_AUDIO_SAMPLE_RATE=$audio_rate
 # Insert extra keyframes at scene cuts for better seek accuracy (slightly increases file size).
@@ -794,6 +804,11 @@ TRANSCODE_H265_CRF=$h265_crf
 # AV1 (libaom-av1, cpu accel only): CRF range 0-63. cpu-used 0=best quality, 8=fastest.
 TRANSCODE_AV1_CRF=$av1_crf
 TRANSCODE_AV1_CPU_USED=$av1_cpu
+# AV1 tile layout COLSxROWS — more tiles = more parallel threads (faster on many
+# cores), slightly worse compression. Empty disables tiling. e.g. 2x2, 4x2.
+TRANSCODE_AV1_TILES=$av1_tiles
+# AV1 row-based multithreading (extra parallelism within each tile).
+TRANSCODE_AV1_ROW_MT=$av1_row_mt
 # Audio sample rate in Hz. 48000 = standard for video. 44100 = CD standard.
 TRANSCODE_AUDIO_SAMPLE_RATE=$audio_rate
 # Insert extra keyframes at scene cuts for better seek accuracy (slightly increases file size).

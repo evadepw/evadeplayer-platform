@@ -48,8 +48,10 @@ func LoadTranscoder() (*Transcoder, error) {
 		Encoding: ffmpeg.EncodingConfig{
 			CPUPreset:       getEnv("TRANSCODE_PRESET", "slow"),
 			NvidiaPreset:    getEnv("TRANSCODE_NVIDIA_PRESET", "p5"),
-			AV1CPUUsed:      getEnvPositiveInt("TRANSCODE_AV1_CPU_USED", 4),
+			AV1CPUUsed:      getEnvPositiveInt("TRANSCODE_AV1_CPU_USED", 6),
 			AV1CRF:          getEnvPositiveInt("TRANSCODE_AV1_CRF", 30),
+			AV1Tiles:        getEnv("TRANSCODE_AV1_TILES", "2x2"),
+			AV1RowMT:        getEnvBool("TRANSCODE_AV1_ROW_MT", true),
 			H264CRF:         getEnvInt("TRANSCODE_H264_CRF", 0),
 			H265CRF:         getEnvInt("TRANSCODE_H265_CRF", 0),
 			AudioBitrate:    getEnv("TRANSCODE_AUDIO_BITRATE", "128k"),
